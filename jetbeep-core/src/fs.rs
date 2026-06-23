@@ -323,21 +323,16 @@ impl File {
         .await
     }
 
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        let size = buf.len();
+    pub async fn read(&mut self, size: usize) -> Result<Vec<u8>, Error> {
         let inner = Arc::clone(&self.inner);
-        let data = run_bg(move || {
+        run_bg(move || {
             let mut tmp = vec![0u8; size];
             let mut guard = inner.lock().map_err(|_| map_lock_error("read"))?;
             let bytes = guard.read(&mut tmp).map_err(|e| map_io_error("read", e))?;
             tmp.truncate(bytes);
             Ok(tmp)
         })
-        .await?;
-
-        let bytes = data.len();
-        buf[..bytes].copy_from_slice(&data);
-        Ok(bytes)
+        .await
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<usize, Error> {
