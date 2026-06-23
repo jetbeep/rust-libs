@@ -91,6 +91,7 @@ static mut BARCODE_WAKER: Option<Waker> = None;
 static mut BARCODE_GEN: u64 = 0;
 static mut BARCODE_ACTIVE_GEN: u64 = 0;
 static mut KEYPAD_WAKER: Option<Waker> = None;
+static mut KEYPAD_PENDING: Option<KeypadKey> = None;
 static mut KEYPAD_GEN: u64 = 0;
 static mut KEYPAD_ACTIVE_GEN: u64 = 0;
 
@@ -146,6 +147,28 @@ unsafe fn keypad_waker_wake_and_clear() {
 	}
 }
 
+fn keypad_key_from_button_type(button_type: i32) -> Option<KeypadKey> {
+	match button_type {
+		1 => Some(KeypadKey::Digit(1)),
+		2 => Some(KeypadKey::Digit(2)),
+		3 => Some(KeypadKey::Digit(3)),
+		4 => Some(KeypadKey::Digit(4)),
+		5 => Some(KeypadKey::Digit(5)),
+		6 => Some(KeypadKey::Digit(6)),
+		7 => Some(KeypadKey::Digit(7)),
+		8 => Some(KeypadKey::Digit(8)),
+		9 => Some(KeypadKey::Digit(9)),
+		10 => Some(KeypadKey::Digit(0)),
+		11 => Some(KeypadKey::Star),
+		12 => Some(KeypadKey::Hash),
+		101 => Some(KeypadKey::A),
+		102 => Some(KeypadKey::B),
+		103 => Some(KeypadKey::C),
+		104 => Some(KeypadKey::D),
+		_ => None,
+	}
+}
+
 fn payload_from_parts(data: *const u8, size: usize) -> Option<alloc::vec::Vec<u8>> {
 	if data.is_null() {
 		if size == 0 {
@@ -192,6 +215,11 @@ impl Stream for KeypadReceiver {
 		unsafe {
 			if self.generation != KEYPAD_ACTIVE_GEN {
 				return Poll::Ready(None);
+			}
+
+			let pending_ptr = core::ptr::addr_of_mut!(KEYPAD_PENDING);
+			if let Some(item) = (*pending_ptr).take() {
+				return Poll::Ready(Some(item));
 			}
 
 			keypad_waker_replace(cx.waker().clone());
@@ -455,6 +483,7 @@ pub fn keypad_subscribe() -> KeypadReceiver {
 	unsafe {
 		KEYPAD_GEN = KEYPAD_GEN.wrapping_add(1);
 		KEYPAD_ACTIVE_GEN = KEYPAD_GEN;
+		KEYPAD_PENDING = None;
 		keypad_waker_wake_and_clear();
 	}
 	KeypadReceiver { generation: unsafe { KEYPAD_ACTIVE_GEN } }
@@ -463,6 +492,7 @@ pub fn keypad_subscribe() -> KeypadReceiver {
 pub fn keypad_unsubscribe() {
 	unsafe {
 		KEYPAD_ACTIVE_GEN = 0;
+		KEYPAD_PENDING = None;
 		keypad_waker_wake_and_clear();
 	}
 }
@@ -485,6 +515,32 @@ pub extern "C" fn rust_bus_barcode_emit(barcode: *const c_char) {
 
 			barcode_queue_push_back(barcode);
 			barcode_waker_wake_and_clear();
+		}
+	});
+}
+
+/// C entrypoint used by i2c_jb_bus keypad event handler.
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_bus_keypad_emit(button_type: i32, is_keypress: bool) {
+	if !is_keypress {
+		return;
+	}
+
+	let Some(key) = keypad_key_from_button_type(button_type) else {
+		return;
+	};
+
+	submit(Duration::from_millis(0), move |_| {
+		unsafe {
+			if KEYPAD_ACTIVE_GEN == 0 {
+				return;
+			}
+
+			let waker_ptr = core::ptr::addr_of_mut!(KEYPAD_WAKER);
+			if let Some(waker) = (*waker_ptr).take() {
+				KEYPAD_PENDING = Some(key);
+				waker.wake();
+			}
 		}
 	});
 }
