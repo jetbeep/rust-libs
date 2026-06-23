@@ -32,6 +32,41 @@ pub type ModemInfo = PollModemGetInfoResponse;
 pub type BatteryInfo = PollBatteryGetInfoResponse;
 pub type VersionInfo = PollVersionInfoResponse;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeypadKey {
+	Digit(u8),
+	Star,
+	Hash,
+	A,
+	B,
+	C,
+	D,
+}
+
+impl KeypadKey {
+	pub fn label(&self) -> &'static str {
+		match self {
+			Self::Digit(0) => "0",
+			Self::Digit(1) => "1",
+			Self::Digit(2) => "2",
+			Self::Digit(3) => "3",
+			Self::Digit(4) => "4",
+			Self::Digit(5) => "5",
+			Self::Digit(6) => "6",
+			Self::Digit(7) => "7",
+			Self::Digit(8) => "8",
+			Self::Digit(9) => "9",
+			Self::Digit(_) => "?",
+			Self::Star => "*",
+			Self::Hash => "#",
+			Self::A => "A",
+			Self::B => "B",
+			Self::C => "C",
+			Self::D => "D",
+		}
+	}
+}
+
 pub const SERVER_REQUEST_DEFAULT_REQUEST_TYPE: i32 = 0;
 pub const SERVER_REQUEST_DEFAULT_TIMEOUT_MS: i32 = 30_000;
 
@@ -55,6 +90,9 @@ static mut BARCODE_QUEUE: Option<VecDeque<String>> = None;
 static mut BARCODE_WAKER: Option<Waker> = None;
 static mut BARCODE_GEN: u64 = 0;
 static mut BARCODE_ACTIVE_GEN: u64 = 0;
+static mut KEYPAD_WAKER: Option<Waker> = None;
+static mut KEYPAD_GEN: u64 = 0;
+static mut KEYPAD_ACTIVE_GEN: u64 = 0;
 
 unsafe fn barcode_queue_pop_front() -> Option<String> {
 	let queue_ptr = core::ptr::addr_of_mut!(BARCODE_QUEUE);
@@ -96,6 +134,18 @@ unsafe fn barcode_waker_wake_and_clear() {
 	}
 }
 
+unsafe fn keypad_waker_replace(waker: Waker) {
+	let waker_ptr = core::ptr::addr_of_mut!(KEYPAD_WAKER);
+	*waker_ptr = Some(waker);
+}
+
+unsafe fn keypad_waker_wake_and_clear() {
+	let waker_ptr = core::ptr::addr_of_mut!(KEYPAD_WAKER);
+	if let Some(waker) = (*waker_ptr).take() {
+		waker.wake();
+	}
+}
+
 fn payload_from_parts(data: *const u8, size: usize) -> Option<alloc::vec::Vec<u8>> {
 	if data.is_null() {
 		if size == 0 {
@@ -126,6 +176,25 @@ impl Stream for BarcodeReceiver {
 			}
 
 			barcode_waker_replace(cx.waker().clone());
+			Poll::Pending
+		}
+	}
+}
+
+pub struct KeypadReceiver {
+	generation: u64,
+}
+
+impl Stream for KeypadReceiver {
+	type Item = KeypadKey;
+
+	fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+		unsafe {
+			if self.generation != KEYPAD_ACTIVE_GEN {
+				return Poll::Ready(None);
+			}
+
+			keypad_waker_replace(cx.waker().clone());
 			Poll::Pending
 		}
 	}
@@ -379,6 +448,22 @@ pub fn barcode_unsubscribe() {
 		BARCODE_ACTIVE_GEN = 0;
 		barcode_queue_clear();
 		barcode_waker_wake_and_clear();
+	}
+}
+
+pub fn keypad_subscribe() -> KeypadReceiver {
+	unsafe {
+		KEYPAD_GEN = KEYPAD_GEN.wrapping_add(1);
+		KEYPAD_ACTIVE_GEN = KEYPAD_GEN;
+		keypad_waker_wake_and_clear();
+	}
+	KeypadReceiver { generation: unsafe { KEYPAD_ACTIVE_GEN } }
+}
+
+pub fn keypad_unsubscribe() {
+	unsafe {
+		KEYPAD_ACTIVE_GEN = 0;
+		keypad_waker_wake_and_clear();
 	}
 }
 

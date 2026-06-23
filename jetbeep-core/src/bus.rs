@@ -195,6 +195,20 @@ impl Stream for BarcodeReceiver {
     }
 }
 
+#[cfg(feature = "simulator")]
+pub struct KeypadReceiver {
+    inner: mpsc::UnboundedReceiver<KeypadKey>,
+}
+
+#[cfg(feature = "simulator")]
+impl Stream for KeypadReceiver {
+    type Item = KeypadKey;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SingleFileSimulatorConfig {
     #[allow(dead_code)]
@@ -400,8 +414,10 @@ pub fn barcode_unsubscribe() {
 }
 
 #[cfg(feature = "simulator")]
-pub fn keypad_subscribe() -> futures::channel::mpsc::UnboundedReceiver<KeypadKey> {
-    state::keypad_subscribe()
+pub fn keypad_subscribe() -> KeypadReceiver {
+    KeypadReceiver {
+        inner: state::keypad_subscribe(),
+    }
 }
 
 #[cfg(feature = "simulator")]
