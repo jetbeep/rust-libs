@@ -5,6 +5,54 @@
 #[cfg(not(any(test, no_zephyr)))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+// Bindgen on LVGL v9 emits enum-style constants like
+// `lv_event_code_t_LV_EVENT_CLICKED` instead of `LV_EVENT_CLICKED`.
+// Keep a stable surface for lvgl-dsl by aliasing the names we use.
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_FLEX_FLOW_ROW: u32 = lv_flex_flow_t_LV_FLEX_FLOW_ROW as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_FLEX_FLOW_COLUMN: u32 = lv_flex_flow_t_LV_FLEX_FLOW_COLUMN as u32;
+
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_LABEL_LONG_WRAP: u32 = lv_label_long_mode_t_LV_LABEL_LONG_MODE_WRAP as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_LABEL_LONG_DOT: u32 = lv_label_long_mode_t_LV_LABEL_LONG_MODE_DOTS as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_LABEL_LONG_SCROLL: u32 = lv_label_long_mode_t_LV_LABEL_LONG_MODE_SCROLL as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_LABEL_LONG_SCROLL_CIRC: u32 = lv_label_long_mode_t_LV_LABEL_LONG_MODE_SCROLL_CIRCULAR as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_LABEL_LONG_CLIP: u32 = lv_label_long_mode_t_LV_LABEL_LONG_MODE_CLIP as u32;
+
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_EVENT_CLICKED: u32 = lv_event_code_t_LV_EVENT_CLICKED as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_EVENT_SCROLL_END: u32 = lv_event_code_t_LV_EVENT_SCROLL_END as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_EVENT_VALUE_CHANGED: u32 = lv_event_code_t_LV_EVENT_VALUE_CHANGED as u32;
+#[cfg(not(any(test, no_zephyr)))]
+pub const LV_EVENT_DELETE: u32 = lv_event_code_t_LV_EVENT_DELETE as u32;
+
+#[cfg(not(any(test, no_zephyr)))]
+unsafe extern "C" {
+    pub fn lv_async_call(
+        cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+        user_data: *mut core::ffi::c_void,
+    ) -> i32;
+
+    pub fn lv_style_set_bg_image_src(
+        style: *mut lv_style_t,
+        value: *const core::ffi::c_void,
+    );
+    pub fn lv_style_set_bg_image_opa(style: *mut lv_style_t, value: u8);
+    pub fn lv_style_set_bg_image_tiled(style: *mut lv_style_t, value: bool);
+
+    pub fn lv_obj_set_style_margin_top(obj: *mut lv_obj_t, value: i32, selector: lv_style_selector_t);
+    pub fn lv_obj_set_style_margin_left(obj: *mut lv_obj_t, value: i32, selector: lv_style_selector_t);
+    pub fn lv_obj_set_style_margin_bottom(obj: *mut lv_obj_t, value: i32, selector: lv_style_selector_t);
+    pub fn lv_obj_set_style_length(obj: *mut lv_obj_t, value: i32, selector: lv_style_selector_t);
+}
+
 // ============================================================
 //  Desktop simulator layer — active when building inside the
 //  screen-sdl CMake project (LVGL_INCLUDE_DIRS env var set by

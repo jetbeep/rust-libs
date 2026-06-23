@@ -48,15 +48,15 @@ impl Arc {
 
     // --- Geometry ---
     pub fn set_bg_angles(&self, start_deg: u16, end_deg: u16) -> &Self {
-        unsafe { c_bindings::lv_arc_set_bg_angles(self.obj.raw(), start_deg, end_deg) };
+        unsafe { c_bindings::lv_arc_set_bg_angles(self.obj.raw(), i32::from(start_deg), i32::from(end_deg)) };
         self
     }
     pub fn set_angles(&self, start_deg: u16, end_deg: u16) -> &Self {
-        unsafe { c_bindings::lv_arc_set_angles(self.obj.raw(), start_deg, end_deg) };
+        unsafe { c_bindings::lv_arc_set_angles(self.obj.raw(), i32::from(start_deg), i32::from(end_deg)) };
         self
     }
     pub fn set_rotation(&self, deg: u16) -> &Self {
-        unsafe { c_bindings::lv_arc_set_rotation(self.obj.raw(), deg) };
+        unsafe { c_bindings::lv_arc_set_rotation(self.obj.raw(), i32::from(deg)) };
         self
     }
     pub fn set_mode(&self, mode: ArcMode) -> &Self {
