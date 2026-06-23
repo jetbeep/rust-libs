@@ -1,0 +1,3 @@
+[workspace]
+members = ["jkv", "lvgl-dsl", "jetbeep-core"]
+resolver = "2"

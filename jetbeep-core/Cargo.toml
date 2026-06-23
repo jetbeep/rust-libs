@@ -1,0 +1,36 @@
+[package]
+name = "jetbeep-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = ["platform-desktop"]
+platform-desktop = ["dep:env_logger", "dep:reqwest", "dep:url", "dep:once_cell", "futures/std"]
+platform-zephyr = ["dep:enumset", "dep:lvgl-dsl"]
+simulator = ["platform-desktop"]
+
+[dependencies]
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+log = "0.4"
+env_logger = { version = "0.11", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.13"
+jkv = { path = "../jkv" }
+enumset = { version = "1.1.10", optional = true }
+lvgl-dsl = { path = "../lvgl-dsl", optional = true }
+
+reqwest = { version = "0.12", features = ["json", "socks", "blocking"], optional = true }
+url = { version = "2.5", optional = true }
+once_cell = { version = "1.20", optional = true }
+
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
