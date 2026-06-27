@@ -53,11 +53,7 @@ impl Default for ServerRequestParams {
 
 fn jkv_key_to_json_key(key: &JkvKey) -> String {
     match key {
-        JkvKey::Undefined => "undefined".to_string(),
-        JkvKey::Null => "null".to_string(),
-        JkvKey::Bool(v) => v.to_string(),
         JkvKey::Int(v) => v.to_string(),
-        JkvKey::Float(v) => v.to_string(),
         JkvKey::String(v) => v.clone(),
     }
 }

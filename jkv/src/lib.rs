@@ -27,16 +27,13 @@ const TYPE_ARRAY: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JkvKey {
-    Undefined,
-    Null,
-    Bool(bool),
     Int(i32),
-    Float(f32),
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum JkvValue {
+    #[default]
     Undefined,
     Null,
     Bool(bool),
@@ -326,11 +323,7 @@ fn encode_value_into(value: &JkvValue, out: &mut Vec<u8>, depth: usize) -> Resul
 
 fn encode_key_into(key: &JkvKey, out: &mut Vec<u8>) -> Result<(), JkvError> {
     match key {
-        JkvKey::Undefined => encode_tag_only(TYPE_UNDEFINED, out),
-        JkvKey::Null => encode_tag_only(TYPE_NULL, out),
-        JkvKey::Bool(v) => out.push((TYPE_BOOL << 4) | u8::from(*v)),
         JkvKey::Int(v) => encode_i32(*v, out)?,
-        JkvKey::Float(v) => encode_u32_payload(TYPE_FLOAT, v.to_bits(), out),
         JkvKey::String(v) => {
             if v.as_bytes().contains(&0) {
                 return Err(JkvError::StringContainsNull);
@@ -445,13 +438,9 @@ fn decode_value_at(data: &[u8], offset: &mut usize, depth: usize) -> Result<JkvV
 fn decode_key_at(data: &[u8], offset: &mut usize) -> Result<JkvKey, JkvError> {
     let key_value = decode_value_at(data, offset, 0)?;
     match key_value {
-        JkvValue::Undefined => Ok(JkvKey::Undefined),
-        JkvValue::Null => Ok(JkvKey::Null),
-        JkvValue::Bool(v) => Ok(JkvKey::Bool(v)),
         JkvValue::Int(v) => Ok(JkvKey::Int(v)),
-        JkvValue::Float(v) => Ok(JkvKey::Float(v)),
         JkvValue::String(v) => Ok(JkvKey::String(v)),
-        JkvValue::Collection(_) | JkvValue::Array(_) => Err(JkvError::NonPrimitiveCollectionKey),
+        _ => Err(JkvError::NonPrimitiveCollectionKey),
     }
 }
 

@@ -413,15 +413,9 @@ impl serde::ser::SerializeStructVariant for StructVariantSerializer {
 
 fn to_key(value: JkvValue) -> Result<JkvKey, JkvSerdeError> {
     match value {
-        JkvValue::Undefined => Ok(JkvKey::Undefined),
-        JkvValue::Null => Ok(JkvKey::Null),
-        JkvValue::Bool(v) => Ok(JkvKey::Bool(v)),
         JkvValue::Int(v) => Ok(JkvKey::Int(v)),
-        JkvValue::Float(v) => Ok(JkvKey::Float(v)),
         JkvValue::String(v) => Ok(JkvKey::String(v)),
-        JkvValue::Collection(_) | JkvValue::Array(_) => {
-            Err(JkvSerdeError::custom("collection/map keys must be primitive values"))
-        }
+        _ => Err(JkvSerdeError::custom("JKV map keys must be int or string")),
     }
 }
 
@@ -856,11 +850,7 @@ impl<'de> serde::de::MapAccess<'de> for MapDeserializer {
 
 fn key_to_value(key: JkvKey) -> JkvValue {
     match key {
-        JkvKey::Undefined => JkvValue::Undefined,
-        JkvKey::Null => JkvValue::Null,
-        JkvKey::Bool(v) => JkvValue::Bool(v),
         JkvKey::Int(v) => JkvValue::Int(v),
-        JkvKey::Float(v) => JkvValue::Float(v),
         JkvKey::String(v) => JkvValue::String(v),
     }
 }
@@ -923,5 +913,177 @@ impl<'de> serde::de::VariantAccess<'de> for VariantDeserializer {
         V: serde::de::Visitor<'de>,
     {
         serde::Deserializer::deserialize_map(ValueDeserializer::new(self.value), visitor)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-describing `Deserialize` for `JkvValue` / `JkvKey`.
+//
+// Lets a `JkvValue` appear as a field in a serde-derived struct (e.g. an
+// opaque `args` payload) and round-trip through `from_jkv_value`. Scalar
+// mappings mirror `JkvSerializer` (i64/u64 -> Int via try_from, f64 -> Float
+// when in range, none/unit -> Null). `JkvKey` only models int and string
+// keys, matching the on-wire key types.
+// ---------------------------------------------------------------------------
+
+impl<'de> serde::Deserialize<'de> for JkvValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JkvValueVisitor)
+    }
+}
+
+struct JkvValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for JkvValueVisitor {
+    type Value = JkvValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any JKV value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvValue::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        i32::try_from(v)
+            .map(JkvValue::Int)
+            .map_err(|_| E::custom("i64 value out of i32 range"))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        i32::try_from(v)
+            .map(JkvValue::Int)
+            .map_err(|_| E::custom("u64 value out of i32 range"))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if !v.is_finite() || v.abs() > f32::MAX as f64 {
+            return Err(E::custom("f64 value out of f32 range"));
+        }
+        Ok(JkvValue::Float(v as f32))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvValue::String(v.to_string()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvValue::String(v))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvValue::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvValue::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<JkvValue>()? {
+            items.push(item);
+        }
+        Ok(JkvValue::Array(items))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut entries = Vec::new();
+        while let Some((key, value)) = map.next_entry::<JkvKey, JkvValue>()? {
+            entries.push((key, value));
+        }
+        Ok(JkvValue::Collection(entries))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for JkvKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JkvKeyVisitor)
+    }
+}
+
+struct JkvKeyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for JkvKeyVisitor {
+    type Value = JkvKey;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JKV map key (int or string)")
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        i32::try_from(v)
+            .map(JkvKey::Int)
+            .map_err(|_| E::custom("i64 key out of i32 range"))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        i32::try_from(v)
+            .map(JkvKey::Int)
+            .map_err(|_| E::custom("u64 key out of i32 range"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvKey::String(v.to_string()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(JkvKey::String(v))
     }
 }
