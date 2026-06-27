@@ -1,6 +1,9 @@
+#![cfg_attr(feature = "platform-zephyr", no_std)]
+
 extern crate alloc;
 
 use log;
+#[cfg(feature = "platform-desktop")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(feature = "platform-desktop", feature = "platform-zephyr"))]
