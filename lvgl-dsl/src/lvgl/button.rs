@@ -130,10 +130,10 @@ impl Button {
 
 #[cfg(test)]
 mod tests {
-    use crate::c_bindings::{reset_obj_pool, spy_drain, LvCall};
+    use crate::c_bindings::{LvCall, reset_obj_pool, spy_drain};
+    use crate::lvgl::LvAlign;
     use crate::lvgl::button::Button;
     use crate::lvgl::screen::Screen;
-    use crate::lvgl::LvAlign;
 
     fn parent() -> Screen {
         reset_obj_pool();
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn set_loading_false_waits_for_min_duration_then_restores() {
-        use crate::c_bindings::{spy_fire_timer, spy_live_timer_handles, LvCall};
+        use crate::c_bindings::{LvCall, spy_fire_timer, spy_live_timer_handles};
         use crate::lvgl::ButtonLoadingConfig;
 
         let p = parent();
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn loading_handle_drop_respects_min_duration() {
-        use crate::c_bindings::{spy_fire_timer, spy_live_timer_handles, LvCall};
+        use crate::c_bindings::{LvCall, spy_fire_timer, spy_live_timer_handles};
         use crate::lvgl::ButtonLoadingConfig;
 
         let p = parent();
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn finish_after_min_timer_elapsed_does_not_delete_consumed_timer() {
-        use crate::c_bindings::{spy_fire_timer, spy_live_timer_handles, LvCall};
+        use crate::c_bindings::{LvCall, spy_fire_timer, spy_live_timer_handles};
         use crate::lvgl::ButtonLoadingConfig;
 
         let p = parent();
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn button_delete_while_loading_cancels_timer_and_makes_handle_noop() {
         use crate::c_bindings::{
-            spy_emit_event, spy_fire_timer, spy_live_timer_handles, LvCall, LV_EVENT_DELETE,
+            LV_EVENT_DELETE, LvCall, spy_emit_event, spy_fire_timer, spy_live_timer_handles,
         };
         use crate::lvgl::{ButtonLoadingConfig, Widget};
 
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn button_delete_callback_unregisters_live_child_and_container_callbacks() {
-        use crate::c_bindings::{spy_emit_event, LvCall, LV_EVENT_DELETE};
+        use crate::c_bindings::{LV_EVENT_DELETE, LvCall, spy_emit_event};
         use crate::lvgl::{ButtonLoadingConfig, Label, Widget};
 
         let p = parent();
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn externally_deleted_loading_container_is_not_deleted_again_on_restore() {
-        use crate::c_bindings::{lv_obj_delete, LvCall};
+        use crate::c_bindings::{LvCall, lv_obj_delete};
         use crate::lvgl::ButtonLoadingConfig;
 
         let p = parent();
@@ -982,11 +982,26 @@ mod tests {
         let calls = spy_drain();
 
         for expected in [
-            LvCall::SetStylePadTop { obj: btn_ptr, value: 0 },
-            LvCall::SetStylePadBottom { obj: btn_ptr, value: 0 },
-            LvCall::SetStylePadLeft { obj: btn_ptr, value: 0 },
-            LvCall::SetStylePadRight { obj: btn_ptr, value: 0 },
-            LvCall::SetStyleBorderWidth { obj: btn_ptr, value: 0 },
+            LvCall::SetStylePadTop {
+                obj: btn_ptr,
+                value: 0,
+            },
+            LvCall::SetStylePadBottom {
+                obj: btn_ptr,
+                value: 0,
+            },
+            LvCall::SetStylePadLeft {
+                obj: btn_ptr,
+                value: 0,
+            },
+            LvCall::SetStylePadRight {
+                obj: btn_ptr,
+                value: 0,
+            },
+            LvCall::SetStyleBorderWidth {
+                obj: btn_ptr,
+                value: 0,
+            },
         ] {
             assert!(
                 calls.iter().any(|c| *c == expected),

@@ -1,23 +1,33 @@
 use crate::c_bindings;
 
+#[cfg(any(test, no_zephyr))]
+fn run_trampoline<F: FnOnce()>(f: F) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+}
+
+#[cfg(not(any(test, no_zephyr)))]
+fn run_trampoline<F: FnOnce()>(f: F) {
+    f();
+}
+
 pub(crate) struct RowCtx {
-    pub list: *mut super::RadioButtonList,
+    pub inner: alloc::rc::Rc<core::cell::RefCell<super::RadioButtonListInner>>,
     pub index: usize,
 }
 
 unsafe extern "C" fn on_row_clicked(e: *mut c_bindings::lv_event_t) {
     let user_data = unsafe { c_bindings::lv_event_get_user_data(e) } as *mut RowCtx;
-    if user_data.is_null() { return; }
-    let ctx = unsafe { &mut *user_data };
-    if ctx.list.is_null() { return; }
-    let list = unsafe { &mut *ctx.list };
-    list.handle_row_clicked(ctx.index);
+    if user_data.is_null() {
+        return;
+    }
+    let (inner, index) = {
+        let ctx = unsafe { &*user_data };
+        (ctx.inner.clone(), ctx.index)
+    };
+    run_trampoline(|| super::RadioButtonList::handle_row_clicked(&inner, index));
 }
 
-pub(crate) unsafe fn register_row(
-    row: *mut c_bindings::lv_obj_t,
-    ctx: *mut RowCtx,
-) {
+pub(crate) unsafe fn register_row(row: *mut c_bindings::lv_obj_t, ctx: *mut RowCtx) {
     unsafe {
         c_bindings::lv_obj_add_event_cb(
             row,
@@ -28,10 +38,7 @@ pub(crate) unsafe fn register_row(
     }
 }
 
-pub(crate) unsafe fn unregister_row(
-    row: *mut c_bindings::lv_obj_t,
-    ctx: *mut RowCtx,
-) {
+pub(crate) unsafe fn unregister_row(row: *mut c_bindings::lv_obj_t, ctx: *mut RowCtx) {
     unsafe {
         c_bindings::lv_obj_remove_event_cb_with_user_data(
             row,

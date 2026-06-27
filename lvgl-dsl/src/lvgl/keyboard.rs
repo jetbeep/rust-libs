@@ -6,14 +6,16 @@ use super::color::Color;
 use super::corner_radius::CornerRadius;
 use super::event::{Event, LvEventCode};
 use super::keyboard_layout::{
-    CTRL_DISABLED, CTRLMAP_SPECIAL, KEY_CONTINUE, KEYMAP_SPECIAL, KeyMap, KeyboardLayout,
-    KeyboardLocale, LvKeyboardMode,
+    CTRL_CHECKED, CTRL_DISABLED, CTRLMAP_SPECIAL, KEY_CONTINUE, KEYMAP_SPECIAL, KeyMap,
+    KeyboardLayout, KeyboardLocale, LvKeyboardMode,
 };
 
 // Most of these constants are used in cfg(not(test)) event handler
 // functions; `is_continue_label_allowed` (compiled in tests too) uses a
 // subset of them. The `allow(unused_imports)` covers the variants not
 // referenced in any specific cfg.
+use super::anim::{Anim, Path as AnimPath};
+use super::font::Font;
 #[allow(unused_imports)]
 use super::keyboard_layout::{
     KEY_123, KEY_ABC, KEY_ABC_LOWER, KEY_BACK, KEY_BACKSPACE, KEY_DEL, KEY_LANG, KEY_LANG_CH,
@@ -24,8 +26,6 @@ use super::keyboard_theme::{
     KeyboardTheme, SELECTOR_KEY_ACTION, SELECTOR_KEY_DISABLED, SELECTOR_KEY_NORMAL,
     SELECTOR_KEY_PRESSED,
 };
-use super::anim::{Anim, Path as AnimPath};
-use super::font::Font;
 use super::size::Size;
 use super::state::LvObjFlag;
 use super::textarea::TextArea;
@@ -36,6 +36,109 @@ use core::ffi::c_char;
 
 /// `LV_BUTTONMATRIX_BUTTON_NONE` — sentinel returned when no button is selected.
 const LV_BTNMATRIX_BTN_NONE: u32 = 0xFFFF;
+
+const USER_MODE_SLOTS: [u32; 4] = [
+    LvKeyboardMode::User1 as u32,
+    LvKeyboardMode::User2 as u32,
+    LvKeyboardMode::User3 as u32,
+    LvKeyboardMode::User4 as u32,
+];
+
+type ContinueState = (bool, Option<&'static core::ffi::CStr>);
+
+#[inline]
+fn user_mode_index(mode: u32) -> Option<usize> {
+    USER_MODE_SLOTS.iter().position(|&slot| slot == mode)
+}
+
+#[inline]
+fn preferred_locale_user_mode(locale: KeyboardLocale) -> Option<u32> {
+    match locale {
+        KeyboardLocale::De => Some(LvKeyboardMode::User2 as u32),
+        KeyboardLocale::Fr => Some(LvKeyboardMode::User3 as u32),
+        KeyboardLocale::It => Some(LvKeyboardMode::User4 as u32),
+        KeyboardLocale::FrCh | KeyboardLocale::Ua => Some(LvKeyboardMode::User1 as u32),
+        KeyboardLocale::EnUs | KeyboardLocale::Numeric => None,
+    }
+}
+
+fn set_keyboard_mode(obj: *mut c_bindings::lv_obj_t, mode_index: u32) {
+    debug_assert!(
+        mode_index < 8,
+        "invalid lv_keyboard_mode_t index {mode_index}"
+    );
+    unsafe { c_bindings::lv_keyboard_set_mode(obj, mode_index) };
+}
+
+fn set_keyboard_map(
+    obj: *mut c_bindings::lv_obj_t,
+    mode_index: u32,
+    map: *const *const core::ffi::c_char,
+    ctrl: *const u32,
+) {
+    debug_assert!(
+        mode_index < 8,
+        "invalid lv_keyboard_mode_t index {mode_index}"
+    );
+    unsafe { c_bindings::lv_keyboard_set_map(obj, mode_index, map, ctrl) };
+}
+
+fn current_continue_state() -> Option<ContinueState> {
+    (unsafe { KB_STATE.get() })
+        .as_ref()
+        .map(|state| (state.continue_enabled, state.continue_label))
+}
+
+fn apply_continue_state_to_obj(obj: *mut c_bindings::lv_obj_t, state: Option<ContinueState>) {
+    let Some((enabled, override_label)) = state else {
+        return;
+    };
+    apply_continue_enabled_to_obj(obj, enabled, override_label);
+}
+
+fn set_keyboard_mode_preserving_continue(obj: *mut c_bindings::lv_obj_t, mode_index: u32) {
+    let continue_state = current_continue_state();
+    set_keyboard_mode(obj, mode_index);
+    apply_continue_state_to_obj(obj, continue_state);
+}
+
+fn apply_continue_enabled_to_obj(
+    obj: *mut c_bindings::lv_obj_t,
+    enabled: bool,
+    override_label: Option<&'static core::ffi::CStr>,
+) {
+    let idx_opt = override_label
+        .and_then(|lbl| find_button_index_raw(obj, lbl))
+        .or_else(|| find_button_index_raw(obj, KEY_CONTINUE));
+    let Some(idx) = idx_opt else {
+        return;
+    };
+
+    unsafe {
+        if enabled {
+            c_bindings::lv_buttonmatrix_clear_button_ctrl(obj, idx, CTRL_DISABLED);
+            c_bindings::lv_buttonmatrix_set_button_ctrl(obj, idx, CTRL_CHECKED);
+        } else {
+            c_bindings::lv_buttonmatrix_clear_button_ctrl(obj, idx, CTRL_CHECKED);
+            c_bindings::lv_buttonmatrix_set_button_ctrl(obj, idx, CTRL_DISABLED);
+        }
+    }
+}
+
+fn find_button_index_raw(obj: *mut c_bindings::lv_obj_t, target: &core::ffi::CStr) -> Option<u32> {
+    const MAX_BUTTONS: u32 = 1024;
+    for idx in 0..MAX_BUTTONS {
+        let p = unsafe { c_bindings::lv_buttonmatrix_get_button_text(obj as *const _, idx) };
+        if p.is_null() {
+            break;
+        }
+        let bytes = unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes();
+        if bytes == target.to_bytes() {
+            return Some(idx);
+        }
+    }
+    None
+}
 
 // ── Per-keyboard custom handler state ─────────────────────────────────────
 
@@ -49,9 +152,9 @@ const LV_BTNMATRIX_BTN_NONE: u32 = 0xFFFF;
 /// # Limitation — single keyboard
 ///
 /// Only **one** `Keyboard` instance may be active at a time.  Each
-/// [`Keyboard::new`] call overwrites the global state, so event callbacks
-/// for a previously-created keyboard will read the new keyboard's state.
-/// This matches the embedded use-case of a single on-screen keyboard.
+/// [`Keyboard::new`] call asserts the global state is empty before installing
+/// callbacks so two live keyboards cannot cross-wire their handler state. This
+/// matches the embedded use-case of a single on-screen keyboard.
 struct KbHandlerState {
     /// Raw `lv_obj_t *` of the keyboard object.
     obj: *mut c_bindings::lv_obj_t,
@@ -79,16 +182,6 @@ struct KbHandlerState {
     /// Whether the consumer asked to replace the textual "Del" key with the
     /// ⌫ icon at install time (see [`Keyboard::del_as_icon`]).
     del_as_icon: bool,
-    /// Per-mode mirror buffers used when `del_as_icon` is enabled **or**
-    /// when [`Keyboard::continue_label`] sets a label override.
-    ///
-    /// Both transforms rewrite individual cells of the installed map, and
-    /// LVGL retains the pointer passed to `lv_keyboard_set_map` for each
-    /// mode slot and dereferences it on every repaint. Sharing a single
-    /// mirror across modes would let a later install (into a different mode)
-    /// silently rewrite the buffer that an earlier-installed mode still
-    /// points at. We keep one stable, heap-owned buffer per mode instead.
-    key_label_mirrors: alloc::collections::BTreeMap<u32, alloc::boxed::Box<[*const c_char; KEY_LABEL_MIRROR_LEN]>>,
     /// Optional override for the visible label of the `Continue` key.
     ///
     /// When `Some(label)`, every cell whose text matches [`KEY_CONTINUE`]
@@ -103,6 +196,83 @@ struct KbHandlerState {
     /// back to the locale's lc/uc map, which would clobber a
     /// [`KeyboardLayout::Custom`] selection).
     active_layout: Option<KeyboardLayout>,
+    /// Desired enabled state of the `Continue` CTA, as last requested via
+    /// [`Keyboard::set_continue_enabled`].
+    ///
+    /// Reinstalling a keymap (e.g. on a locale/shift switch) resets the
+    /// `Continue` key to its map default (`CTRL_CHECKED`, enabled), so this
+    /// flag is re-applied after every map install to keep the CTA's gating
+    /// (e.g. "a recipient row is selected") independent of the keyboard
+    /// language. Defaults to `true` to match the map default.
+    continue_enabled: bool,
+    /// Optional Back-key outline style applied while LVGL creates per-key draw tasks.
+    back_outline: Option<BackOutline>,
+    /// Runtime owner of each real LVGL user slot (`USER_1..USER_4`).
+    locale_user_slots: [Option<KeyboardLocale>; 4],
+}
+
+#[derive(Copy, Clone)]
+struct BackOutline {
+    color: Color,
+    width: i32,
+    pad: i32,
+}
+
+impl KbHandlerState {
+    fn mode_for_locale(&mut self, locale: KeyboardLocale) -> u32 {
+        self.mode_for_locale_excluding(locale, None)
+    }
+
+    fn mode_for_locale_excluding(
+        &mut self,
+        locale: KeyboardLocale,
+        excluded_mode: Option<u32>,
+    ) -> u32 {
+        if matches!(locale, KeyboardLocale::EnUs | KeyboardLocale::Numeric) {
+            return locale.native_mode();
+        }
+
+        if let Some((idx, _)) = self
+            .locale_user_slots
+            .iter()
+            .enumerate()
+            .find(|(_, occupant)| **occupant == Some(locale))
+        {
+            return USER_MODE_SLOTS[idx];
+        }
+
+        let is_available = |idx: usize, slots: &[Option<KeyboardLocale>; 4]| {
+            slots[idx].is_none() && Some(USER_MODE_SLOTS[idx]) != excluded_mode
+        };
+        let preferred = preferred_locale_user_mode(locale).unwrap_or(LvKeyboardMode::User1 as u32);
+        let idx = user_mode_index(preferred)
+            .filter(|&idx| is_available(idx, &self.locale_user_slots))
+            .or_else(|| {
+                self.locale_user_slots
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, _)| is_available(idx, &self.locale_user_slots).then_some(idx))
+            })
+            .or_else(|| {
+                user_mode_index(preferred)
+                    .filter(|&idx| Some(USER_MODE_SLOTS[idx]) != excluded_mode)
+            })
+            .or_else(|| {
+                USER_MODE_SLOTS
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, &mode)| (Some(mode) != excluded_mode).then_some(idx))
+            })
+            .unwrap_or_else(|| user_mode_index(preferred).unwrap_or(0));
+        self.locale_user_slots[idx] = Some(locale);
+        USER_MODE_SLOTS[idx]
+    }
+
+    fn clear_locale_slot(&mut self, mode: u32) {
+        if let Some(idx) = user_mode_index(mode) {
+            self.locale_user_slots[idx] = None;
+        }
+    }
 }
 
 /// A `Sync` wrapper around a value that is only accessed from a single thread.
@@ -157,7 +327,7 @@ static KB_STATE: LvglCell<Option<KbHandlerState>> = LvglCell::new(None);
 /// LVGL stores the map pointer it was handed and reads from it on every
 /// repaint, so we can't mutate the read-only static keymap in place. Each
 /// mode slot gets its own heap-owned `Box<[*const c_char; KEY_LABEL_MIRROR_LEN]>`
-/// in [`KbHandlerState::key_label_mirrors`]; the helper below copies the active
+/// in [`KEY_LABEL_MIRRORS`]; the helper below copies the active
 /// map into that slot, conditionally rewrites cells based on which
 /// transforms are currently enabled (`del_as_icon` swaps `KEY_DEL` →
 /// `KEY_BACKSPACE`; `continue_label` swaps `KEY_CONTINUE` → the override
@@ -165,6 +335,30 @@ static KB_STATE: LvglCell<Option<KbHandlerState>> = LvglCell::new(None);
 /// 128 entries is comfortably more than any layout we ship (largest is
 /// QWERTY ≈ 40 cells including row separators and terminator).
 const KEY_LABEL_MIRROR_LEN: usize = 128;
+
+type KeyLabelMirrorMap =
+    alloc::collections::BTreeMap<u32, alloc::boxed::Box<[*const c_char; KEY_LABEL_MIRROR_LEN]>>;
+
+/// Process-global per-mode mirror buffers for the key-label transforms
+/// (`del_as_icon`, `continue_label`).
+///
+/// **Why this is a process-global static and not per-keyboard state:**
+/// LVGL's keyboard stores installed maps in its own process-global
+/// `kb_map[]` array (`lv_keyboard.c`), keyed by mode, and every keyboard
+/// constructor reads `kb_map[mode]` before the new keyboard installs its
+/// own maps. If these mirror buffers lived in [`KbHandlerState`] (which is
+/// freed when a `Keyboard` is dropped), then after a keyboard teardown
+/// `kb_map[mode]` would dangle into freed memory and the **next**
+/// `lv_keyboard_create` would dereference it — a use-after-free crash.
+///
+/// Keeping the buffers in this never-freed static (reused in place, one
+/// `Box` per mode) guarantees that any pointer LVGL retains in `kb_map[]`
+/// stays valid for the process lifetime. The contents are always `'static`
+/// (locale layout consts, `KEY_BACKSPACE`, the `continue_label` `&'static
+/// CStr`), so persisting the buffers leaks nothing meaningful and is
+/// bounded to ≤10 modes total.
+static KEY_LABEL_MIRRORS: LvglCell<KeyLabelMirrorMap> =
+    LvglCell::new(alloc::collections::BTreeMap::new());
 
 /// Pure helper extracted from [`accent_long_press_cb`] so the "undo base
 /// char after popup opens" behaviour is unit-testable.
@@ -216,7 +410,7 @@ fn is_continue_label_allowed(label: &core::ffi::CStr) -> bool {
     !RESERVED.iter().any(|r| r.to_bytes() == bytes)
 }
 
-/// Copies `src` into the [`KbHandlerState::key_label_mirrors`] entry for `mode`,
+/// Copies `src` into the [`KEY_LABEL_MIRRORS`] entry for `mode`,
 /// applying the currently-active text-cell transforms:
 ///
 /// * If [`KbHandlerState::del_as_icon`] is set, every cell whose label is
@@ -275,7 +469,7 @@ unsafe fn install_key_label_mirror(
         // del-as-icon and continue-label overrides are skipped together.
         #[cfg(any(test, no_zephyr))]
         eprintln!(
-            "[lvgl-dsl] install_key_label_mirror: keymap exceeds \
+            "[jetbeep-lvgl-dsl] install_key_label_mirror: keymap exceeds \
              KEY_LABEL_MIRROR_LEN capacity ({}); del-as-icon and \
              continue-label overrides skipped for this map",
             KEY_LABEL_MIRROR_LEN
@@ -283,10 +477,14 @@ unsafe fn install_key_label_mirror(
         return src;
     };
 
-    // Get-or-allocate the per-mode mirror. The Box keeps the buffer at a
-    // stable address even when the BTreeMap rebalances, so any pointer
-    // LVGL retains for another mode remains valid.
-    let mirror = state.key_label_mirrors.entry(mode).or_insert_with(|| {
+    // Get-or-allocate the per-mode mirror in the process-global store. The
+    // Box keeps the buffer at a stable address even when the BTreeMap
+    // rebalances, so any pointer LVGL retains (in its own global `kb_map[]`,
+    // potentially across keyboard teardown) remains valid for the process
+    // lifetime.
+    // SAFETY: KEY_LABEL_MIRRORS is accessed only from the LVGL thread.
+    let mirrors = unsafe { KEY_LABEL_MIRRORS.get_mut() };
+    let mirror = mirrors.entry(mode).or_insert_with(|| {
         alloc::boxed::Box::new([core::ptr::null::<c_char>(); KEY_LABEL_MIRROR_LEN])
     });
     let term_idx = i;
@@ -312,57 +510,53 @@ unsafe fn install_key_label_mirror(
     (**mirror).as_ptr()
 }
 
-/// Installs the lowercase map for the given locale into its native LVGL mode slot.
+/// Installs the lowercase map for the given locale into its runtime LVGL mode slot.
 fn install_lc_map(obj: *mut c_bindings::lv_obj_t, locale: KeyboardLocale) {
+    let mut mode = locale.native_mode();
+    let mut continue_state = None;
     if let Some((lc_map, lc_ctrl, _, _)) = locale.map_pair() {
         let mut map_ptr = lc_map.as_ptr() as *const *const core::ffi::c_char;
         // SAFETY: KB_STATE is accessed only from the LVGL thread.
         unsafe {
             if let Some(state) = KB_STATE.get_mut().as_mut() {
+                mode = state.mode_for_locale(locale);
+                continue_state = Some((state.continue_enabled, state.continue_label));
                 if state.del_as_icon || state.continue_label.is_some() {
-                    map_ptr = install_key_label_mirror(state, locale.native_mode(), map_ptr);
+                    map_ptr = install_key_label_mirror(state, mode, map_ptr);
                 }
             }
         }
-        unsafe {
-            c_bindings::lv_keyboard_set_map(
-                obj,
-                locale.native_mode(),
-                map_ptr,
-                lc_ctrl.as_ptr(),
-            );
-        }
+        set_keyboard_map(obj, mode, map_ptr, lc_ctrl.as_ptr());
+    } else {
+        continue_state = current_continue_state();
     }
     // Always switch mode — even locales without a custom map (e.g. Numeric)
     // need lv_keyboard_set_mode to activate their LVGL built-in slot.
-    unsafe {
-        c_bindings::lv_keyboard_set_mode(obj, locale.native_mode());
-    }
+    set_keyboard_mode(obj, mode);
+    apply_continue_state_to_obj(obj, continue_state);
 }
 
-/// Installs the uppercase map for the given locale into its native LVGL mode slot.
+/// Installs the uppercase map for the given locale into its runtime LVGL mode slot.
 fn install_uc_map(obj: *mut c_bindings::lv_obj_t, locale: KeyboardLocale) {
+    let mut mode = locale.native_mode();
+    let mut continue_state = None;
     if let Some((_, _, uc_map, uc_ctrl)) = locale.map_pair() {
         let mut map_ptr = uc_map.as_ptr() as *const *const core::ffi::c_char;
         unsafe {
             if let Some(state) = KB_STATE.get_mut().as_mut() {
+                mode = state.mode_for_locale(locale);
+                continue_state = Some((state.continue_enabled, state.continue_label));
                 if state.del_as_icon || state.continue_label.is_some() {
-                    map_ptr = install_key_label_mirror(state, locale.native_mode(), map_ptr);
+                    map_ptr = install_key_label_mirror(state, mode, map_ptr);
                 }
             }
         }
-        unsafe {
-            c_bindings::lv_keyboard_set_map(
-                obj,
-                locale.native_mode(),
-                map_ptr,
-                uc_ctrl.as_ptr(),
-            );
-        }
+        set_keyboard_map(obj, mode, map_ptr, uc_ctrl.as_ptr());
+    } else {
+        continue_state = current_continue_state();
     }
-    unsafe {
-        c_bindings::lv_keyboard_set_mode(obj, locale.native_mode());
-    }
+    set_keyboard_mode(obj, mode);
+    apply_continue_state_to_obj(obj, continue_state);
 }
 
 /// Installs the [`KEYMAP_SPECIAL`] / [`CTRLMAP_SPECIAL`] custom map into
@@ -372,23 +566,23 @@ fn install_uc_map(obj: *mut c_bindings::lv_obj_t, locale: KeyboardLocale) {
 /// keyboard font lacks the symbol range).
 fn install_special_map(obj: *mut c_bindings::lv_obj_t) {
     let mut map_ptr = KEYMAP_SPECIAL.as_ptr() as *const *const core::ffi::c_char;
+    let mut continue_state = None;
     // SAFETY: KB_STATE is accessed only from the LVGL thread.
     unsafe {
         if let Some(state) = KB_STATE.get_mut().as_mut() {
+            continue_state = Some((state.continue_enabled, state.continue_label));
             if state.del_as_icon || state.continue_label.is_some() {
-                map_ptr =
-                    install_key_label_mirror(state, LvKeyboardMode::Special as u32, map_ptr);
+                map_ptr = install_key_label_mirror(state, LvKeyboardMode::Special as u32, map_ptr);
             }
         }
     }
-    unsafe {
-        c_bindings::lv_keyboard_set_map(
-            obj,
-            LvKeyboardMode::Special as u32,
-            map_ptr,
-            CTRLMAP_SPECIAL.as_ptr(),
-        );
-    }
+    set_keyboard_map(
+        obj,
+        LvKeyboardMode::Special as u32,
+        map_ptr,
+        CTRLMAP_SPECIAL.as_ptr(),
+    );
+    apply_continue_state_to_obj(obj, continue_state);
 }
 
 // ── Accent popup helpers ──────────────────────────────────────────────────
@@ -398,16 +592,20 @@ const ACCENT_POPUP_H: i32 = 44;
 /// Vertical gap (px) between the popup and the top of the keyboard.
 const ACCENT_POPUP_GAP: i32 = 4;
 
+fn delete_accent_popup_if_valid(popup: *mut c_bindings::lv_obj_t) {
+    if !popup.is_null() && unsafe { c_bindings::lv_obj_is_valid(popup) } {
+        unsafe { c_bindings::lv_obj_delete(popup) };
+    }
+}
+
 /// Destroys the active accent popup (if any) and clears the state.
 #[cfg(not(test))]
 fn dismiss_accent_popup() {
     // SAFETY: called from the LVGL thread only (event callback context).
     let state = unsafe { KB_STATE.get_mut() };
     if let Some(state) = state.as_mut() {
-        if !state.accent_popup.is_null() {
-            unsafe { c_bindings::lv_obj_delete(state.accent_popup) };
-            state.accent_popup = core::ptr::null_mut();
-        }
+        let popup = core::mem::replace(&mut state.accent_popup, core::ptr::null_mut());
+        delete_accent_popup_if_valid(popup);
     }
 }
 
@@ -567,7 +765,7 @@ unsafe extern "C" fn accent_long_press_cb(e: *mut c_bindings::lv_event_t) {
         c_bindings::lv_obj_add_event_cb(
             popup,
             Some(accent_popup_event_cb),
-            LvEventCode::ValueChanged as u32,
+            LvEventCode::ValueChanged.as_u32(),
             core::ptr::null_mut(),
         );
     }
@@ -613,6 +811,35 @@ unsafe extern "C" fn accent_long_press_cb(e: *mut c_bindings::lv_event_t) {
         if !indev.is_null() {
             c_bindings::lv_indev_wait_release(indev);
         }
+    }
+}
+
+unsafe extern "C" fn back_outline_draw_task_cb(e: *mut c_bindings::lv_event_t) {
+    let task = unsafe { c_bindings::lv_event_get_draw_task(e) };
+    if task.is_null() {
+        return;
+    }
+
+    let border = unsafe { c_bindings::lv_draw_task_get_border_dsc(task) };
+    if border.is_null() {
+        return;
+    }
+
+    let outline = unsafe { KB_STATE.get() }.as_ref().and_then(|state| state.back_outline);
+    let Some(outline) = outline else {
+        return;
+    };
+
+    let button_id = unsafe { (*border).base.id1 };
+    let target = unsafe { c_bindings::lv_event_get_target(e) as *const c_bindings::lv_obj_t };
+    let text = unsafe { c_bindings::lv_buttonmatrix_get_button_text(target, button_id) };
+    if !text.is_null() && unsafe { core::ffi::CStr::from_ptr(text) } == KEY_BACK {
+        unsafe {
+            (*border).color = outline.color.to_lv();
+            (*border).width = outline.width;
+            (*border).opa = 255;
+        }
+        let _ = outline.pad;
     }
 }
 
@@ -674,12 +901,10 @@ unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
         // Switch to special mode — LVGL's Special layout includes numerals
         // in row 1 plus symbols below, matching the conventional "123"
         // mobile keyboard affordance.
-        unsafe {
-            c_bindings::lv_keyboard_set_mode(
-                obj,
-                super::keyboard_layout::LvKeyboardMode::Special as u32,
-            );
-        }
+        set_keyboard_mode_preserving_continue(
+            obj,
+            super::keyboard_layout::LvKeyboardMode::Special as u32,
+        );
         return;
     }
 
@@ -704,7 +929,7 @@ unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
     if txt == KEY_BACK {
         // Fire cancel event
         unsafe {
-            c_bindings::lv_obj_send_event(obj, LvEventCode::Cancel as u32, core::ptr::null_mut());
+            c_bindings::lv_obj_send_event(obj, LvEventCode::Cancel.as_u32(), core::ptr::null_mut());
         }
         return;
     }
@@ -717,7 +942,7 @@ unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
     {
         // Fire ready event
         unsafe {
-            c_bindings::lv_obj_send_event(obj, LvEventCode::Ready as u32, core::ptr::null_mut());
+            c_bindings::lv_obj_send_event(obj, LvEventCode::Ready.as_u32(), core::ptr::null_mut());
         }
         return;
     }
@@ -775,9 +1000,12 @@ unsafe extern "C" fn slide_exec_y(var: *mut core::ffi::c_void, val: i32) {
 unsafe extern "C" fn on_slide_hide_done(_anim: *mut c_bindings::lv_anim_t) {
     let obj = SLIDE_HIDE_PENDING.load(Ordering::Relaxed);
     if !obj.is_null() {
-        // SAFETY: obj was stored as a valid `lv_obj_t *` in slide_hide().
-        unsafe { c_bindings::lv_obj_add_flag(obj, LvObjFlag::HIDDEN.0) };
         SLIDE_HIDE_PENDING.store(core::ptr::null_mut(), Ordering::Relaxed);
+        if unsafe { c_bindings::lv_obj_is_valid(obj) } {
+            // SAFETY: obj was stored as a valid `lv_obj_t *` in slide_hide()
+            // and is still present in LVGL's object tree.
+            unsafe { c_bindings::lv_obj_add_flag(obj, LvObjFlag::HIDDEN.0) };
+        }
     }
 }
 
@@ -794,9 +1022,9 @@ unsafe extern "C" fn on_slide_hide_done(_anim: *mut c_bindings::lv_anim_t) {
 /// # Single-instance limitation
 ///
 /// Only one `Keyboard` may be active at a time.  Creating a second instance
-/// with [`Keyboard::new`] overwrites the global handler state (`KB_STATE`),
-/// making the previous instance inoperable.  Drop or hide the first keyboard
-/// before constructing a new one.
+/// with [`Keyboard::new`] panics instead of overwriting the global handler
+/// state (`KB_STATE`) and cross-wiring callbacks between widgets. Drop the
+/// first keyboard before constructing a new one.
 ///
 /// # LVGL thread affinity
 ///
@@ -808,7 +1036,7 @@ unsafe extern "C" fn on_slide_hide_done(_anim: *mut c_bindings::lv_anim_t) {
 /// # Example
 ///
 /// ```rust,ignore
-/// use lvgl_dsl::lvgl::prelude::*;
+/// use jetbeep_lvgl_dsl::lvgl::prelude::*;
 ///
 /// fn on_ready(_e: Event) { /* commit input */ }
 ///
@@ -845,6 +1073,38 @@ impl Widget for Keyboard {
     }
 }
 
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        let obj = self.lv_obj().raw();
+        if SLIDE_HIDE_PENDING.load(Ordering::Relaxed) == obj {
+            SLIDE_HIDE_PENDING.store(core::ptr::null_mut(), Ordering::Relaxed);
+        }
+        if unsafe { c_bindings::lv_obj_is_valid(obj) } {
+            unsafe {
+                c_bindings::lv_anim_delete(obj.cast::<core::ffi::c_void>(), Some(slide_exec_y))
+            };
+            // The keyboard's maps can point into the process-global
+            // `KEY_LABEL_MIRRORS` store (which outlives this keyboard);
+            // remove the LVGL object before tearing down the rest of the
+            // retained Rust state.
+            unsafe { c_bindings::lv_obj_delete(obj) };
+        }
+
+        let popup = unsafe {
+            let state = KB_STATE.get_mut();
+            if state.as_ref().is_some_and(|state| state.obj == obj) {
+                state
+                    .take()
+                    .map_or(core::ptr::null_mut(), |state| state.accent_popup)
+            } else {
+                core::ptr::null_mut()
+            }
+        };
+
+        delete_accent_popup_if_valid(popup);
+    }
+}
+
 impl Keyboard {
     /// Creates a new keyboard widget as a child of `parent`.
     ///
@@ -855,8 +1115,14 @@ impl Keyboard {
     /// The keyboard starts in English US lowercase mode.
     ///
     /// # Panics
-    /// Panics if LVGL returns a null pointer (out-of-memory).
+    /// Panics if another [`Keyboard`] is still active, or if LVGL returns a
+    /// null pointer (out-of-memory).
     pub fn new(parent: &impl Widget) -> Keyboard {
+        assert!(
+            unsafe { KB_STATE.get() }.is_none(),
+            "only one Keyboard may be active at a time; drop the existing keyboard before creating another"
+        );
+
         // SAFETY: `parent` wraps a non-null, valid LVGL object.
         let obj = unsafe { c_bindings::lv_keyboard_create(parent.lv_obj().raw()) };
         if obj.is_null() {
@@ -873,7 +1139,7 @@ impl Keyboard {
             c_bindings::lv_obj_add_event_cb(
                 obj,
                 Some(custom_kb_event_cb),
-                LvEventCode::ValueChanged as u32,
+                LvEventCode::ValueChanged.as_u32(),
                 core::ptr::null_mut(),
             );
 
@@ -881,7 +1147,7 @@ impl Keyboard {
             c_bindings::lv_obj_add_event_cb(
                 obj,
                 Some(accent_long_press_cb),
-                LvEventCode::LongPressed as u32,
+                LvEventCode::LongPressed.as_u32(),
                 core::ptr::null_mut(),
             );
         }
@@ -899,9 +1165,11 @@ impl Keyboard {
                 ctrl_map_installed: true,
                 font_ptr: core::ptr::null(),
                 del_as_icon: false,
-                key_label_mirrors: alloc::collections::BTreeMap::new(),
                 continue_label: None,
                 active_layout: Some(KeyboardLayout::Locale(KeyboardLocale::EnUs)),
+                continue_enabled: true,
+                back_outline: None,
+                locale_user_slots: [None; 4],
             });
         }
 
@@ -977,15 +1245,24 @@ impl Keyboard {
     pub fn layout(&self, layout: KeyboardLayout) -> &Self {
         // Sync locale state for any Locale(..) variant, regardless of whether
         // a custom map is installed (Numeric has no map but still needs the update).
-        unsafe {
+        let continue_enabled = unsafe {
             let state = KB_STATE.get_mut();
             if let Some(state) = state.as_mut() {
                 if let KeyboardLayout::Locale(locale) = &layout {
                     state.locale = *locale;
                     state.uppercase = false;
+                    state.ctrl_map_installed = true;
                 }
                 state.active_layout = Some(layout);
+                state.continue_enabled
+            } else {
+                true
             }
+        };
+        if let KeyboardLayout::Locale(locale) = layout {
+            install_lc_map(self.lv_obj().raw(), locale);
+            self.set_continue_enabled(continue_enabled);
+            return self;
         }
         if let Some((map, ctrl)) = layout.maps() {
             // Track whether this layout has a ctrl map so popover_keys()
@@ -995,6 +1272,9 @@ impl Keyboard {
                 let state = KB_STATE.get_mut();
                 if let Some(state) = state.as_mut() {
                     state.ctrl_map_installed = has_ctrl;
+                    if matches!(layout, KeyboardLayout::Custom(_)) {
+                        state.clear_locale_slot(LvKeyboardMode::User1 as u32);
+                    }
                 }
             }
             // Popovers must be disabled before calling lv_keyboard_set_map
@@ -1013,7 +1293,7 @@ impl Keyboard {
                         map_ptr = install_key_label_mirror(state, layout.lv_mode(), map_ptr);
                     }
                 }
-                c_bindings::lv_keyboard_set_map(
+                set_keyboard_map(
                     self.lv_obj().raw(),
                     layout.lv_mode(),
                     // SAFETY: KeyMapEntry is repr(transparent) over *const c_char.
@@ -1031,8 +1311,16 @@ impl Keyboard {
                 }
             }
         }
-        // SAFETY: lv_mode() returns a valid lv_keyboard_mode_t integer.
-        unsafe { c_bindings::lv_keyboard_set_mode(self.lv_obj().raw(), layout.lv_mode()) }
+        set_keyboard_mode(self.lv_obj().raw(), layout.lv_mode());
+        apply_continue_state_to_obj(
+            self.lv_obj().raw(),
+            Some((
+                continue_enabled,
+                unsafe { KB_STATE.get() }
+                    .as_ref()
+                    .and_then(|state| state.continue_label),
+            )),
+        );
         self
     }
 
@@ -1040,8 +1328,7 @@ impl Keyboard {
     ///
     /// Use [`layout`](Keyboard::layout) for the DSL-friendly API.
     pub fn mode(&self, mode: super::keyboard_layout::LvKeyboardMode) -> &Self {
-        // SAFETY: mode is a repr(u32) enum value.
-        unsafe { c_bindings::lv_keyboard_set_mode(self.lv_obj().raw(), mode as u32) }
+        set_keyboard_mode_preserving_continue(self.lv_obj().raw(), mode as u32);
         self
     }
 
@@ -1052,7 +1339,7 @@ impl Keyboard {
     pub fn locale(&self, locale: KeyboardLocale) -> &Self {
         // SAFETY: called from the LVGL thread (public API, UI context).
         let state = unsafe { KB_STATE.get_mut() };
-        if let Some(state) = state.as_mut() {
+        let continue_enabled = if let Some(state) = state.as_mut() {
             state.locale = locale;
             state.uppercase = false;
             // All locales either install a custom ctrl map (map_pair is Some) or
@@ -1060,9 +1347,17 @@ impl Keyboard {
             // always safe after a locale switch.
             state.ctrl_map_installed = true;
             state.active_layout = Some(KeyboardLayout::Locale(locale));
-        }
+            state.continue_enabled
+        } else {
+            true
+        };
         // Install the locale's lowercase map.
         install_lc_map(self.lv_obj().raw(), locale);
+        // Reinstalling the map reset the Continue key to its map default
+        // (enabled); restore the caller's last requested gating state so the
+        // CTA's enabled-ness stays tied to the in-screen selection, not the
+        // keyboard language.
+        self.set_continue_enabled(continue_enabled);
         self
     }
 
@@ -1159,7 +1454,7 @@ impl Keyboard {
         // active layout) and is consulted whenever the `123` key toggles
         // to special mode. Reinstall it too so the swap stays in sync.
         install_special_map(self.lv_obj().raw());
-        // NOTE: We intentionally do NOT clear `key_label_mirrors` here, even
+        // NOTE: We intentionally do NOT clear `KEY_LABEL_MIRRORS` here, even
         // when `enabled == false`. LVGL retains the map pointer for
         // every mode slot we have ever installed, not just the currently
         // active one. Other slots (e.g. a `KeyboardLayout::Custom` map
@@ -1216,7 +1511,7 @@ impl Keyboard {
                 );
                 #[cfg(any(test, no_zephyr))]
                 eprintln!(
-                    "[lvgl-dsl] Keyboard::continue_label: rejected label \
+                    "[jetbeep-lvgl-dsl] Keyboard::continue_label: rejected label \
                      {:?} (collides with reserved action-key label or breaks LVGL \
                      map); keeping previous label",
                     lbl
@@ -1247,7 +1542,7 @@ impl Keyboard {
             None => {}
         }
         install_special_map(self.lv_obj().raw());
-        // See `del_as_icon`: we do NOT clear `key_label_mirrors` when `label`
+        // See `del_as_icon`: we do NOT clear `KEY_LABEL_MIRRORS` when `label`
         // is `None` and `del_as_icon` is also off. LVGL retains map
         // pointers for *every* mode slot we have ever installed, and we
         // only reinstall the currently-active slot (plus Special) here.
@@ -1279,10 +1574,14 @@ impl Keyboard {
         self
     }
 
-    /// Sets the background colour for action keys (Enter, Backspace, etc.).
+    /// Sets the background colour for the primary CTA key (`Continue`).
     ///
     /// Targets keys marked with `LV_BUTTONMATRIX_CTRL_CHECKED` in the ctrl map
-    /// (LVGL renders them with `LV_STATE_CHECKED`).
+    /// (LVGL renders them with `LV_STATE_CHECKED`). In the current layouts only
+    /// the `Continue` key carries that flag, so this styles that CTA alone;
+    /// other action keys (`Back`, `⌫`, `123`, `🌐`, …) keep the normal key
+    /// style. The gray rest-state border is suppressed in this state so the
+    /// filled CTA reads as a solid orange button rather than an outlined one.
     pub fn key_style_action(&self, color: Color) -> &Self {
         // SAFETY: obj is non-null and valid; selector is LV_PART_ITEMS | LV_STATE_CHECKED.
         unsafe {
@@ -1291,6 +1590,9 @@ impl Keyboard {
                 color.to_lv(),
                 SELECTOR_KEY_ACTION,
             );
+            // Hide the normal gray outline while the key is in its active
+            // (CHECKED) look; the rest-state border still applies otherwise.
+            c_bindings::lv_obj_set_style_border_opa(self.lv_obj().raw(), 0, SELECTOR_KEY_ACTION);
         }
         self
     }
@@ -1303,6 +1605,96 @@ impl Keyboard {
                 self.lv_obj().raw(),
                 color.to_lv(),
                 SELECTOR_KEY_PRESSED,
+            );
+        }
+        self
+    }
+
+    /// Sets the border colour and width for regular (non-action) keys.
+    ///
+    /// Targets keys at rest (`SELECTOR_KEY_NORMAL`) and forces full border
+    /// opacity so the outline is visible regardless of the active LVGL theme.
+    pub fn key_border_normal(&self, color: Color, width: i32) -> &Self {
+        // SAFETY: obj is non-null and valid; selector is LV_PART_ITEMS.
+        unsafe {
+            c_bindings::lv_obj_set_style_border_color(
+                self.lv_obj().raw(),
+                color.to_lv(),
+                SELECTOR_KEY_NORMAL,
+            );
+            c_bindings::lv_obj_set_style_border_width(
+                self.lv_obj().raw(),
+                width,
+                SELECTOR_KEY_NORMAL,
+            );
+            c_bindings::lv_obj_set_style_border_opa(self.lv_obj().raw(), 255, SELECTOR_KEY_NORMAL);
+        }
+        self
+    }
+
+    /// Sets the label colour for regular (non-action) keys.
+    pub fn key_text_color_normal(&self, color: Color) -> &Self {
+        // SAFETY: obj is non-null and valid; selector is LV_PART_ITEMS.
+        unsafe {
+            c_bindings::lv_obj_set_style_text_color(
+                self.lv_obj().raw(),
+                color.to_lv(),
+                SELECTOR_KEY_NORMAL,
+            );
+        }
+        self
+    }
+
+    /// Sets the label colour for action keys (those drawn in
+    /// `LV_STATE_CHECKED`, e.g. the `Continue` CTA).
+    pub fn key_text_color_action(&self, color: Color) -> &Self {
+        // SAFETY: obj is non-null and valid; selector is LV_PART_ITEMS | LV_STATE_CHECKED.
+        unsafe {
+            c_bindings::lv_obj_set_style_text_color(
+                self.lv_obj().raw(),
+                color.to_lv(),
+                SELECTOR_KEY_ACTION,
+            );
+        }
+        self
+    }
+
+    /// Sets the keyboard's outer paddings (gap from the keyboard edges to the
+    /// key grid), in pixels, on `LV_PART_MAIN`.
+    pub fn key_paddings(&self, top: i32, right: i32, bottom: i32, left: i32) -> &Self {
+        // SAFETY: obj is non-null and valid; selector 0 is LV_PART_MAIN.
+        unsafe {
+            c_bindings::lv_obj_set_style_pad_top(self.lv_obj().raw(), top, 0);
+            c_bindings::lv_obj_set_style_pad_right(self.lv_obj().raw(), right, 0);
+            c_bindings::lv_obj_set_style_pad_bottom(self.lv_obj().raw(), bottom, 0);
+            c_bindings::lv_obj_set_style_pad_left(self.lv_obj().raw(), left, 0);
+        }
+        self
+    }
+
+    /// Sets the spacing between adjacent keys (both rows and columns), in
+    /// pixels, on `LV_PART_MAIN`.
+    pub fn key_gap(&self, gap: i32) -> &Self {
+        // SAFETY: obj is non-null and valid; selector 0 is LV_PART_MAIN.
+        unsafe {
+            c_bindings::lv_obj_set_style_pad_row(self.lv_obj().raw(), gap, 0);
+            c_bindings::lv_obj_set_style_pad_column(self.lv_obj().raw(), gap, 0);
+        }
+        self
+    }
+
+    /// Sets the accent outline used for the `Back` key.
+    pub fn back_outline(&self, color: Color, width: i32, pad: i32) -> &Self {
+        if let Some(state) = unsafe { KB_STATE.get_mut() }.as_mut() {
+            state.back_outline = Some(BackOutline { color, width, pad });
+        }
+        self.add_flag(LvObjFlag::SEND_DRAW_TASK_EVENTS);
+        unsafe {
+            c_bindings::lv_obj_add_event_cb(
+                self.lv_obj().raw(),
+                Some(back_outline_draw_task_cb),
+                LvEventCode::DrawTaskAdded.as_u32(),
+                core::ptr::null_mut(),
             );
         }
         self
@@ -1394,10 +1786,15 @@ impl Keyboard {
 
     /// Enables or disables the `Continue` key on the active layout.
     ///
-    /// When disabled the key:
-    /// - Will not fire `LV_EVENT_READY` / its `on_continue` callback.
-    /// - Renders in `LV_STATE_DISABLED` (greyed-out background and text by
-    ///   default — see [`Keyboard::new`] for the default colours).
+    /// The key's accent (orange CTA) fill is driven by `LV_STATE_CHECKED`, so
+    /// the enabled/disabled visual is toggled by flipping **both** control
+    /// bits together rather than relying on a `CHECKED + DISABLED` state
+    /// precedence:
+    /// - **enabled** → `CTRL_CHECKED` set, `CTRL_DISABLED` cleared → orange
+    ///   fill with white label, clickable.
+    /// - **disabled** → `CTRL_CHECKED` cleared, `CTRL_DISABLED` set → greyed
+    ///   out (see [`Keyboard::new`] for the default disabled colours), not
+    ///   clickable and no `LV_EVENT_READY` / `on_continue` callback.
     ///
     /// Use this to gate a "next step" CTA on whatever in-screen selection
     /// the consumer requires (e.g. a recipient row being highlighted).
@@ -1405,73 +1802,17 @@ impl Keyboard {
     /// No-op when the active map has no key labelled `"Continue"` (or no key
     /// labelled with the active override set by [`Keyboard::continue_label`]).
     pub fn set_continue_enabled(&self, enabled: bool) -> &Self {
+        // Remember the requested state so it can be restored after a keymap
+        // reinstall (locale/shift switch) resets Continue to its map default.
+        // SAFETY: called from the LVGL thread (UI context).
+        if let Some(state) = unsafe { KB_STATE.get_mut() }.as_mut() {
+            state.continue_enabled = enabled;
+        }
         let override_label = unsafe { KB_STATE.get() }
             .as_ref()
             .and_then(|st| st.continue_label);
-        // Prefer the override label when set: with an active
-        // continue_label, the displayed cells were already rewritten to
-        // the override string and `KEY_CONTINUE` no longer appears in the
-        // map. Fall back to the canonical `Continue` label when no
-        // override is installed.
-        let idx_opt = override_label
-            .and_then(|lbl| self.find_button_index(lbl))
-            .or_else(|| self.find_button_index(KEY_CONTINUE));
-        let Some(idx) = idx_opt else {
-            return self;
-        };
-        // SAFETY: obj is non-null and valid; idx came from the live map
-        // via lv_buttonmatrix_get_button_text.
-        unsafe {
-            if enabled {
-                c_bindings::lv_buttonmatrix_clear_button_ctrl(
-                    self.lv_obj().raw(),
-                    idx,
-                    CTRL_DISABLED,
-                );
-            } else {
-                c_bindings::lv_buttonmatrix_set_button_ctrl(
-                    self.lv_obj().raw(),
-                    idx,
-                    CTRL_DISABLED,
-                );
-            }
-        }
+        apply_continue_enabled_to_obj(self.lv_obj().raw(), enabled, override_label);
         self
-    }
-
-    /// Returns the button-matrix index of the first key whose label matches
-    /// `target`, or `None` if no such key is present in the active map.
-    ///
-    /// Indices are logical (excluding `\n` row separators), as expected by
-    /// `lv_buttonmatrix_set_button_ctrl` and friends.
-    fn find_button_index(&self, target: &core::ffi::CStr) -> Option<u32> {
-        // The loop terminates on the first null returned by
-        // `lv_buttonmatrix_get_button_text` (which signals an out-of-range
-        // index), so this upper bound is purely defensive against a
-        // pathological LVGL version that never returns null. `MAX_BUTTONS`
-        // is generously larger than any keymap we ship (the biggest is
-        // QWERTY ≈ 40 keys including row separators).
-        const MAX_BUTTONS: u32 = 1024;
-        for idx in 0..MAX_BUTTONS {
-            // SAFETY: obj is non-null; lv_buttonmatrix_get_button_text is
-            // safe to call with any index and returns null for invalid ids.
-            let txt_ptr = unsafe {
-                c_bindings::lv_buttonmatrix_get_button_text(
-                    self.lv_obj().raw() as *const _,
-                    idx,
-                )
-            };
-            if txt_ptr.is_null() {
-                return None;
-            }
-            // SAFETY: lv_buttonmatrix_get_button_text returns a pointer to
-            // a NUL-terminated C string owned by the keyboard's map.
-            let txt = unsafe { core::ffi::CStr::from_ptr(txt_ptr) };
-            if txt == target {
-                return Some(idx);
-            }
-        }
-        None
     }
 
     // -----------------------------------------------------------------------
@@ -1595,26 +1936,42 @@ impl Keyboard {
     // Locale preloading
     // -----------------------------------------------------------------------
 
-    /// Pre-installs the custom lowercase maps for each language locale in
-    /// `locales` into their dedicated LVGL User slots without changing the
-    /// active mode.
+    /// Pre-installs custom lowercase maps for language locales into LVGL's
+    /// real `USER_1..USER_4` slots without changing the active mode.
     ///
     /// Call this once after construction so that subsequent
     /// [`locale()`](Keyboard::locale) calls only need to switch the map
     /// (for the current locale) rather than install from scratch.
     ///
-    /// Locales without a custom map (`Numeric`) are silently skipped.
+    /// `EnUs` and `Numeric` use built-in slots and are silently skipped. If
+    /// more than four custom locales are supplied, later locales reuse/replace
+    /// an existing user slot; the active locale switch will reinstall as needed.
     pub fn preload_locale_maps(&self, locales: &[KeyboardLocale]) -> &Self {
         for &locale in locales {
+            if matches!(locale, KeyboardLocale::EnUs | KeyboardLocale::Numeric) {
+                continue;
+            }
             if let Some((map, ctrl)) = locale.maps() {
-                unsafe {
-                    c_bindings::lv_keyboard_set_map(
-                        self.lv_obj().raw(),
-                        locale.native_mode(),
-                        map.as_ptr() as *const *const core::ffi::c_char,
-                        ctrl.as_ptr(),
-                    );
-                }
+                let mode = unsafe {
+                    KB_STATE
+                        .get_mut()
+                        .as_mut()
+                        .map_or(locale.native_mode(), |state| {
+                            let protected_mode =
+                                if matches!(state.active_layout, Some(KeyboardLayout::Custom(_))) {
+                                    Some(LvKeyboardMode::User1 as u32)
+                                } else {
+                                    None
+                                };
+                            state.mode_for_locale_excluding(locale, protected_mode)
+                        })
+                };
+                set_keyboard_map(
+                    self.lv_obj().raw(),
+                    mode,
+                    map.as_ptr() as *const *const core::ffi::c_char,
+                    ctrl.as_ptr(),
+                );
             }
         }
         self
@@ -1623,7 +1980,10 @@ impl Keyboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_LABEL_MIRROR_LEN, install_key_label_mirror};
+    use super::{
+        KEY_LABEL_MIRROR_LEN, install_key_label_mirror, install_lc_map, install_special_map,
+        install_uc_map, set_keyboard_mode_preserving_continue,
+    };
     use crate::c_bindings::{LvCall, reset_obj_pool, spy_drain};
     use crate::lvgl::LvAlign;
     use crate::lvgl::event::LvEventCode;
@@ -1635,6 +1995,7 @@ mod tests {
     use crate::lvgl::keyboard_theme::KeyboardTheme;
     use crate::lvgl::screen::Screen;
     use crate::lvgl::textarea::TextArea;
+    use crate::lvgl::widget::Widget;
     use core::ffi::c_char;
 
     fn setup() -> KbTestScreen {
@@ -1651,6 +2012,7 @@ mod tests {
         // closures and label mirrors) deterministically.
         unsafe {
             *super::KB_STATE.get_mut() = None;
+            super::KEY_LABEL_MIRRORS.get_mut().clear();
         }
         super::SLIDE_HIDE_PENDING
             .store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
@@ -1717,6 +2079,195 @@ mod tests {
             "expected KeyboardCreate, got: {calls:?}"
         );
         drop(kb);
+    }
+
+    #[test]
+    fn new_panics_when_keyboard_state_already_live() {
+        let screen = setup();
+        let _kb = Keyboard::new(&screen);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _second = Keyboard::new(&screen);
+        }));
+
+        assert!(
+            result.is_err(),
+            "Keyboard::new must reject a second live keyboard instead of overwriting KB_STATE"
+        );
+    }
+
+    #[test]
+    fn drop_clears_matching_global_state_pending_hide_and_popup() {
+        use core::sync::atomic::Ordering;
+
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let kb_obj = kb.lv_obj().raw();
+        let popup = unsafe { crate::c_bindings::lv_buttonmatrix_create(screen.lv_obj().raw()) };
+        unsafe {
+            super::KB_STATE.get_mut().as_mut().unwrap().accent_popup = popup;
+        }
+        super::SLIDE_HIDE_PENDING.store(kb_obj, Ordering::Relaxed);
+        spy_drain();
+
+        drop(kb);
+
+        assert!(
+            unsafe { super::KB_STATE.get() }.is_none(),
+            "dropping the owning keyboard must clear KB_STATE"
+        );
+        assert!(
+            super::SLIDE_HIDE_PENDING.load(Ordering::Relaxed).is_null(),
+            "dropping the pending-hide keyboard must clear SLIDE_HIDE_PENDING"
+        );
+        let calls = spy_drain();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == popup as usize)),
+            "Drop must delete the surviving accent popup, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn key_label_mirror_buffers_outlive_keyboard_drop() {
+        // Regression: LVGL's keyboard stores installed maps in a
+        // process-global `kb_map[]` (lv_keyboard.c), keyed by mode, and every
+        // keyboard constructor reads `kb_map[mode]` before installing its own
+        // maps. The `del_as_icon` / `continue_label` transforms install mirror
+        // buffers into that global. When those buffers lived in the
+        // per-keyboard `KB_STATE`, dropping a keyboard freed them while
+        // `kb_map[mode]` still pointed at them — so the NEXT
+        // `lv_keyboard_create` dereferenced freed memory and crashed
+        // (EXC_BAD_ACCESS in `allocate_button_areas_and_controls`).
+        //
+        // The mirror store must therefore outlive the keyboard. Against the
+        // mock LVGL layer the dangling read can't be reproduced as a crash,
+        // so we assert the invariant directly: the exact buffers installed by
+        // one keyboard are still present, at the same addresses, in the
+        // persistent store after that keyboard is dropped — and survive the
+        // creation of a second keyboard.
+        let screen = setup();
+
+        let kb = Keyboard::new(&screen);
+        kb.del_as_icon(true); // forces a mirror install into KEY_LABEL_MIRRORS
+        assert!(
+            unsafe { !super::KEY_LABEL_MIRRORS.get().is_empty() },
+            "del_as_icon must install at least one mirror buffer"
+        );
+        let before: alloc::vec::Vec<(u32, usize)> = unsafe {
+            super::KEY_LABEL_MIRRORS
+                .get()
+                .iter()
+                .map(|(mode, buf)| (*mode, (**buf).as_ptr() as usize))
+                .collect()
+        };
+
+        drop(kb);
+
+        let after: alloc::vec::Vec<(u32, usize)> = unsafe {
+            super::KEY_LABEL_MIRRORS
+                .get()
+                .iter()
+                .map(|(mode, buf)| (*mode, (**buf).as_ptr() as usize))
+                .collect()
+        };
+        assert_eq!(
+            before, after,
+            "key-label mirror buffers must survive keyboard drop unchanged so \
+             LVGL's global kb_map[] never dangles into freed memory"
+        );
+
+        // A second keyboard must construct without disturbing the persisted
+        // buffers (in production its constructor safely reads the still-valid
+        // kb_map[mode]).
+        let _kb2 = Keyboard::new(&screen);
+        assert!(
+            unsafe { !super::KEY_LABEL_MIRRORS.get().is_empty() },
+            "creating a second keyboard must not clear the persistent mirror store"
+        );
+    }
+
+    #[test]
+    fn drop_deletes_live_keyboard_before_releasing_retained_state() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let kb_obj = kb.lv_obj().raw();
+        kb.del_as_icon(true);
+        spy_drain();
+
+        drop(kb);
+
+        let calls = spy_drain();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == kb_obj as usize)),
+            "Drop must delete the live LVGL keyboard before freeing retained maps/state, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn drop_cancels_slide_animation_before_deleting_keyboard() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let kb_obj = kb.lv_obj().raw();
+        kb.slide_hide();
+        spy_drain();
+
+        drop(kb);
+
+        let calls = spy_drain();
+        let anim_delete_idx = calls.iter().position(|c| {
+            matches!(
+                c,
+                LvCall::AnimDelete { var, cb: Some(_) } if *var == kb_obj as usize
+            )
+        });
+        let obj_delete_idx = calls
+            .iter()
+            .position(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == kb_obj as usize));
+        assert!(
+            matches!((anim_delete_idx, obj_delete_idx), (Some(a), Some(d)) if a < d),
+            "Drop must cancel slide animations before deleting the keyboard object, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn drop_does_not_clear_globals_owned_by_another_keyboard() {
+        use core::sync::atomic::Ordering;
+
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let other = 0xDEADusize as *mut crate::c_bindings::lv_obj_t;
+        let popup = unsafe { crate::c_bindings::lv_buttonmatrix_create(screen.lv_obj().raw()) };
+        unsafe {
+            let state = super::KB_STATE.get_mut().as_mut().unwrap();
+            state.obj = other;
+            state.accent_popup = popup;
+        }
+        super::SLIDE_HIDE_PENDING.store(other, Ordering::Relaxed);
+        spy_drain();
+
+        drop(kb);
+
+        let state = unsafe { super::KB_STATE.get() }.as_ref().unwrap();
+        assert_eq!(
+            state.obj, other,
+            "Drop must not clear KB_STATE when it references a different keyboard"
+        );
+        assert_eq!(
+            super::SLIDE_HIDE_PENDING.load(Ordering::Relaxed),
+            other,
+            "Drop must not clear another keyboard's pending hide"
+        );
+        let calls = spy_drain();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == popup as usize)),
+            "Drop must not delete another keyboard's accent popup, got: {calls:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1860,7 +2411,7 @@ mod tests {
             calls.iter().any(|c| matches!(
                 c,
                 LvCall::AddEventCb { code, .. }
-                if *code == LvEventCode::Ready as u32
+                if *code == LvEventCode::Ready.as_u32()
             )),
             "expected AddEventCb with Ready code, got: {calls:?}"
         );
@@ -1878,7 +2429,7 @@ mod tests {
             calls.iter().any(|c| matches!(
                 c,
                 LvCall::AddEventCb { code, .. }
-                if *code == LvEventCode::Cancel as u32
+                if *code == LvEventCode::Cancel.as_u32()
             )),
             "expected AddEventCb with Cancel code, got: {calls:?}"
         );
@@ -1984,6 +2535,98 @@ mod tests {
                 if *ctrl == CTRL_DISABLED
             )),
             "expected no DISABLED ctrl set, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_continue_survives_shift_keymap_reinstall() {
+        use crate::lvgl::keyboard_layout::CTRL_DISABLED;
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        kb.layout(KeyboardLayout::Locale(KeyboardLocale::EnUs));
+        kb.set_continue_enabled(false);
+        spy_drain();
+
+        install_uc_map(kb.lv_obj().raw(), KeyboardLocale::EnUs);
+        let calls = spy_drain();
+
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrl { ctrl, .. }
+                if *ctrl == CTRL_DISABLED
+            )),
+            "upper-case reinstall must re-disable Continue after lv_keyboard_set_map; got: {calls:?}"
+        );
+
+        spy_drain();
+        install_lc_map(kb.lv_obj().raw(), KeyboardLocale::EnUs);
+        let calls = spy_drain();
+
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrl { ctrl, .. }
+                if *ctrl == CTRL_DISABLED
+            )),
+            "lower-case reinstall must re-disable Continue after lv_keyboard_set_map; got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_continue_survives_123_mode_swap_and_special_reinstall() {
+        use crate::lvgl::keyboard_layout::CTRL_DISABLED;
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        kb.layout(KeyboardLayout::Locale(KeyboardLocale::EnUs));
+        kb.set_continue_enabled(false);
+        spy_drain();
+
+        set_keyboard_mode_preserving_continue(kb.lv_obj().raw(), LvKeyboardMode::Special as u32);
+        let calls = spy_drain();
+
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrl { ctrl, .. }
+                if *ctrl == CTRL_DISABLED
+            )),
+            "123 mode swap must re-disable Continue after lv_keyboard_set_mode; got: {calls:?}"
+        );
+
+        spy_drain();
+        install_special_map(kb.lv_obj().raw());
+        let calls = spy_drain();
+
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrl { ctrl, .. }
+                if *ctrl == CTRL_DISABLED
+            )),
+            "special-map reinstall must re-disable Continue after lv_keyboard_set_map; got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_continue_survives_locale_switch() {
+        use crate::lvgl::keyboard_layout::CTRL_DISABLED;
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        kb.layout(KeyboardLayout::Locale(KeyboardLocale::EnUs));
+        kb.set_continue_enabled(false);
+        spy_drain();
+
+        kb.locale(KeyboardLocale::De);
+        let calls = spy_drain();
+
+        assert!(
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrl { ctrl, .. }
+                if *ctrl == CTRL_DISABLED
+            )),
+            "locale switch must leave Continue disabled; got: {calls:?}"
         );
     }
 
@@ -2186,6 +2829,121 @@ mod tests {
     }
 
     #[test]
+    fn locale_switching_never_uses_modes_outside_lvgl_v93_range() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        spy_drain();
+
+        for locale in [
+            KeyboardLocale::EnUs,
+            KeyboardLocale::De,
+            KeyboardLocale::Fr,
+            KeyboardLocale::It,
+            KeyboardLocale::FrCh,
+            KeyboardLocale::Ua,
+            KeyboardLocale::Numeric,
+        ] {
+            kb.locale(locale);
+        }
+
+        let calls = spy_drain();
+        let modes: Vec<u32> = calls
+            .iter()
+            .filter_map(|c| match c {
+                LvCall::KeyboardSetMap { mode, .. } | LvCall::KeyboardSetMode { mode, .. } => {
+                    Some(*mode)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            modes.iter().all(|&mode| mode < 8),
+            "locale switching must never pass USER_5/USER_6 or higher to LVGL; got modes {modes:?}"
+        );
+        assert!(
+            modes
+                .iter()
+                .any(|&mode| mode == LvKeyboardMode::User4 as u32),
+            "test must exercise the highest real LVGL user slot; got modes {modes:?}"
+        );
+    }
+
+    #[test]
+    fn preload_locale_maps_installs_only_real_lvgl_user_slots() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        spy_drain();
+
+        kb.preload_locale_maps(&[
+            KeyboardLocale::De,
+            KeyboardLocale::Fr,
+            KeyboardLocale::It,
+            KeyboardLocale::FrCh,
+            KeyboardLocale::Ua,
+        ]);
+
+        let calls = spy_drain();
+        let modes: Vec<u32> = calls
+            .iter()
+            .filter_map(|c| {
+                if let LvCall::KeyboardSetMap { mode, .. } = c {
+                    Some(*mode)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            modes.iter().all(|&mode| {
+                (LvKeyboardMode::User1 as u32..=LvKeyboardMode::User4 as u32).contains(&mode)
+            }),
+            "preload must install maps only into USER_1..USER_4; got modes {modes:?}"
+        );
+        assert!(
+            modes.len() >= 4,
+            "preload should fill the available four user slots before evicting/skipping; got modes {modes:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, LvCall::KeyboardSetMode { .. })),
+            "preload must not change active mode, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn preload_locale_maps_does_not_clobber_active_custom_user1_slot() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        kb.layout(KeyboardLayout::Custom(KEYMAP_NUMPAD));
+        spy_drain();
+
+        kb.preload_locale_maps(&[KeyboardLocale::FrCh, KeyboardLocale::Ua]);
+
+        let calls = spy_drain();
+        let modes: Vec<u32> = calls
+            .iter()
+            .filter_map(|c| {
+                if let LvCall::KeyboardSetMap { mode, .. } = c {
+                    Some(*mode)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            !modes.contains(&(LvKeyboardMode::User1 as u32)),
+            "preload must not overwrite active Custom map in USER_1; got modes {modes:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, LvCall::KeyboardSetMode { .. })),
+            "preload must not change active mode, got: {calls:?}"
+        );
+    }
+
+    #[test]
     fn locale_switcher_drives_keyboard_cycle() {
         let screen = setup();
         let kb = Keyboard::new(&screen);
@@ -2318,6 +3076,34 @@ mod tests {
         assert!(
             super::SLIDE_HIDE_PENDING.load(Ordering::Relaxed).is_null(),
             "slide_show must clear SLIDE_HIDE_PENDING to prevent re-hide after rapid hide→show"
+        );
+    }
+
+    #[test]
+    fn slide_hide_done_skips_deleted_keyboard_and_clears_pending() {
+        use core::sync::atomic::Ordering;
+
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let kb_obj = kb.lv_obj().raw();
+        super::SLIDE_HIDE_PENDING.store(kb_obj, Ordering::Relaxed);
+        unsafe { crate::c_bindings::lv_obj_delete(kb_obj) };
+        spy_drain();
+
+        unsafe { super::on_slide_hide_done(core::ptr::null_mut()) };
+
+        assert!(
+            super::SLIDE_HIDE_PENDING.load(Ordering::Relaxed).is_null(),
+            "completion must clear a stale pending-hide pointer"
+        );
+        let calls = spy_drain();
+        assert!(
+            !calls.iter().any(|c| matches!(
+                c,
+                LvCall::AddFlag { obj, flag }
+                if *obj == kb_obj as usize && *flag == crate::lvgl::state::LvObjFlag::HIDDEN.0
+            )),
+            "completion must not add HIDDEN to a deleted keyboard, got: {calls:?}"
         );
     }
 
@@ -2499,8 +3285,18 @@ mod tests {
 
     /// Test-only helper: a stand-alone `KbHandlerState` we can pass to
     /// `install_key_label_mirror` without standing up a real keyboard.
-    fn fresh_test_state() -> super::KbHandlerState {
-        super::KbHandlerState {
+    ///
+    /// Because `install_key_label_mirror` now writes into the process-global
+    /// [`super::KEY_LABEL_MIRRORS`] store, this also acquires the
+    /// keyboard-test serialization lock and clears that store, so each test
+    /// starts from a clean slate and never races another thread. The guard
+    /// is returned alongside the state and must be kept alive for the whole
+    /// test body.
+    fn fresh_test_state() -> (std::sync::MutexGuard<'static, ()>, super::KbHandlerState) {
+        let guard = lock_keyboard_test();
+        // SAFETY: serialized by `guard`; single-thread-only access.
+        unsafe { super::KEY_LABEL_MIRRORS.get_mut().clear() };
+        let state = super::KbHandlerState {
             obj: core::ptr::null_mut(),
             locale: crate::lvgl::keyboard_layout::KeyboardLocale::EnUs,
             uppercase: false,
@@ -2509,10 +3305,13 @@ mod tests {
             ctrl_map_installed: true,
             font_ptr: core::ptr::null(),
             del_as_icon: true,
-            key_label_mirrors: alloc::collections::BTreeMap::new(),
             continue_label: None,
             active_layout: None,
-        }
+            continue_enabled: true,
+            back_outline: None,
+            locale_user_slots: [None; 4],
+        };
+        (guard, state)
     }
 
     #[test]
@@ -2521,11 +3320,10 @@ mod tests {
         let owned: alloc::vec::Vec<alloc::ffi::CString> = (0..oversized)
             .map(|i| alloc::ffi::CString::new(alloc::format!("k{i}")).unwrap())
             .collect();
-        let mut raw: alloc::vec::Vec<*const c_char> =
-            owned.iter().map(|s| s.as_ptr()).collect();
+        let mut raw: alloc::vec::Vec<*const c_char> = owned.iter().map(|s| s.as_ptr()).collect();
         raw.push(core::ptr::null());
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         let src = raw.as_ptr();
         let out = unsafe { install_key_label_mirror(&mut state, 0, src) };
 
@@ -2535,7 +3333,7 @@ mod tests {
              instead of writing past the mirror"
         );
         assert!(
-            state.key_label_mirrors.is_empty(),
+            unsafe { super::KEY_LABEL_MIRRORS.get().is_empty() },
             "fallback path must not allocate a mirror entry"
         );
     }
@@ -2545,18 +3343,15 @@ mod tests {
         use crate::lvgl::keyboard_layout::KEY_BACKSPACE;
         let custom_del = alloc::ffi::CString::new("Del").unwrap();
         let custom_a = alloc::ffi::CString::new("a").unwrap();
-        let raw: alloc::vec::Vec<*const c_char> = alloc::vec![
-            custom_a.as_ptr(),
-            custom_del.as_ptr(),
-            core::ptr::null(),
-        ];
+        let raw: alloc::vec::Vec<*const c_char> =
+            alloc::vec![custom_a.as_ptr(), custom_del.as_ptr(), core::ptr::null(),];
         assert_ne!(
             custom_del.as_ptr(),
             crate::lvgl::keyboard_layout::KEY_DEL.as_ptr(),
             "test precondition: custom CString must have a distinct pointer"
         );
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         let out = unsafe { install_key_label_mirror(&mut state, 0, raw.as_ptr()) };
         let swapped_cell = unsafe { *out.add(1) };
         assert_eq!(
@@ -2573,10 +3368,9 @@ mod tests {
         // map whose terminator is a non-null pointer to an empty C string —
         // otherwise lv_keyboard_set_map would dereference null.
         let custom_a = alloc::ffi::CString::new("a").unwrap();
-        let raw: alloc::vec::Vec<*const c_char> =
-            alloc::vec![custom_a.as_ptr(), core::ptr::null()];
+        let raw: alloc::vec::Vec<*const c_char> = alloc::vec![custom_a.as_ptr(), core::ptr::null()];
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         let out = unsafe { install_key_label_mirror(&mut state, 0, raw.as_ptr()) };
         let terminator = unsafe { *out.add(1) };
         assert!(
@@ -2597,12 +3391,10 @@ mod tests {
         // would let the second install silently rewrite the first.
         let a = alloc::ffi::CString::new("a").unwrap();
         let b = alloc::ffi::CString::new("b").unwrap();
-        let raw_a: alloc::vec::Vec<*const c_char> =
-            alloc::vec![a.as_ptr(), core::ptr::null()];
-        let raw_b: alloc::vec::Vec<*const c_char> =
-            alloc::vec![b.as_ptr(), core::ptr::null()];
+        let raw_a: alloc::vec::Vec<*const c_char> = alloc::vec![a.as_ptr(), core::ptr::null()];
+        let raw_b: alloc::vec::Vec<*const c_char> = alloc::vec![b.as_ptr(), core::ptr::null()];
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         let out_mode_0 = unsafe { install_key_label_mirror(&mut state, 0, raw_a.as_ptr()) };
         let out_mode_1 = unsafe { install_key_label_mirror(&mut state, 1, raw_b.as_ptr()) };
 
@@ -2638,7 +3430,7 @@ mod tests {
             core::ptr::null(),
         ];
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         state.del_as_icon = false;
         state.continue_label = Some(c"Apply");
 
@@ -2675,7 +3467,7 @@ mod tests {
             core::ptr::null(),
         ];
 
-        let mut state = fresh_test_state();
+        let (_kb_guard, mut state) = fresh_test_state();
         state.del_as_icon = true;
         state.continue_label = Some(c"Apply");
 
@@ -2684,7 +3476,10 @@ mod tests {
         let continue_cell = unsafe { *out.add(1) };
         let del_cell = unsafe { *out.add(2) };
         let continue_bytes = unsafe { core::ffi::CStr::from_ptr(continue_cell) }.to_bytes();
-        assert_eq!(continue_bytes, b"Apply", "Continue cell rewritten to override");
+        assert_eq!(
+            continue_bytes, b"Apply",
+            "Continue cell rewritten to override"
+        );
         assert_eq!(
             del_cell,
             KEY_BACKSPACE.as_ptr(),
@@ -2695,11 +3490,9 @@ mod tests {
     #[test]
     fn continue_label_none_leaves_continue_cell_untouched() {
         use crate::lvgl::keyboard_layout::KEY_CONTINUE;
-        let raw: alloc::vec::Vec<*const c_char> = alloc::vec![
-            KEY_CONTINUE.as_ptr(),
-            core::ptr::null(),
-        ];
-        let mut state = fresh_test_state();
+        let raw: alloc::vec::Vec<*const c_char> =
+            alloc::vec![KEY_CONTINUE.as_ptr(), core::ptr::null(),];
+        let (_kb_guard, mut state) = fresh_test_state();
         state.del_as_icon = true;
         state.continue_label = None;
 
@@ -2765,8 +3558,14 @@ mod tests {
         use crate::lvgl::keyboard_layout::{
             KEY_123, KEY_ABC, KEY_BACK, KEY_BACKSPACE, KEY_DEL, KEY_LANG,
         };
-        assert!(!is_continue_label_allowed(c""), "empty label breaks LVGL map");
-        assert!(!is_continue_label_allowed(c"\n"), "newline starts a new row");
+        assert!(
+            !is_continue_label_allowed(c""),
+            "empty label breaks LVGL map"
+        );
+        assert!(
+            !is_continue_label_allowed(c"\n"),
+            "newline starts a new row"
+        );
         assert!(!is_continue_label_allowed(KEY_ABC));
         assert!(!is_continue_label_allowed(KEY_123));
         assert!(!is_continue_label_allowed(KEY_BACK));

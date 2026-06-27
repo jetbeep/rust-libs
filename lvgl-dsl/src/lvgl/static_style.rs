@@ -6,11 +6,25 @@ use super::widget::Widget;
 
 pub type StyleProp = u8;
 
-pub const LV_STYLE_PROP_INV: StyleProp = 0;
 pub const LV_STYLE_PROP_CONST: u8 = 0xFF;
 pub const LV_STYLE_CONST_HAS_GROUP: u32 = 0xFFFF_FFFF;
 
-pub const LV_STYLE_ALIGN: StyleProp = 18;
+// LVGL style-property ids (`lv_style_prop_t`). These MUST match the exact LVGL
+// version this crate is compiled against. On the desktop simulator build.rs
+// parses the real lv_style.h and generates these ids (cfg `gen_style_props`);
+// every other build uses the hand-maintained fallback table below.
+#[cfg(gen_style_props)]
+include!(concat!(env!("OUT_DIR"), "/lv_style_props.rs"));
+
+#[cfg(not(gen_style_props))]
+pub use hardcoded_style_props::*;
+
+#[cfg(not(gen_style_props))]
+mod hardcoded_style_props {
+    use super::StyleProp;
+
+    pub const LV_STYLE_PROP_INV: StyleProp = 0;
+    pub const LV_STYLE_ALIGN: StyleProp = 18;
 pub const LV_STYLE_ANIM: StyleProp = 116;
 pub const LV_STYLE_ANIM_DURATION: StyleProp = 117;
 pub const LV_STYLE_ARC_COLOR: StyleProp = 91;
@@ -138,6 +152,7 @@ pub const LV_STYLE_TRANSLATE_Y: StyleProp = 13;
 pub const LV_STYLE_WIDTH: StyleProp = 1;
 pub const LV_STYLE_X: StyleProp = 16;
 pub const LV_STYLE_Y: StyleProp = 17;
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -475,7 +490,7 @@ define_lv_style_const_macros!(
 
 #[cfg(test)]
 mod tests {
-    use super::*;    
+    use super::*;
 
     const BTN_STYLE_PROPS: [StaticStyleProp; 6] = [
         LV_STYLE_CONST_WIDTH!(120),
@@ -1421,7 +1436,6 @@ macro_rules! static_style_grid_cell_row_span {
     };
 }
 
-
 // -----------------------------------------------------------------------------
 // Rust-idiomatic short aliases
 // -----------------------------------------------------------------------------
@@ -2347,4 +2361,3 @@ macro_rules! grid_cell_row_span {
         $crate::static_style_grid_cell_row_span!($val)
     };
 }
-

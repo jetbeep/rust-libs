@@ -1,5 +1,20 @@
-pub mod anim;
+//! LVGL widget DSL.
+//!
+//! ## C callback trampoline checklist
+//!
+//! Trampolines registered with LVGL must never mint aliasing `&mut T` from
+//! `void *` user data. Recover shared references (`&T`) or shared boxed
+//! contexts, then use `Cell`/`RefCell`/`Rc<RefCell<_>>` for mutation. Any
+//! pointer baked into LVGL user data must target a stable allocation
+//! (`Pin<Box<_>>`, a separately boxed context, or an `Rc` allocation), not a
+//! movable stack value. Trampolines must validate liveness before touching
+//! state, must not unwind across the C ABI (use the crate's panic guard where
+//! `std` is available), and any heap user-data registered with LVGL must be
+//! unregistered or freed from an `LV_EVENT_DELETE` cleanup callback before the
+//! allocation is released.
+
 mod align;
+pub mod anim;
 mod arc;
 mod border;
 mod button;
@@ -38,7 +53,6 @@ mod textarea;
 mod util;
 mod widget;
 
-pub use self::display::init_default_theme;
 pub use self::align::LvAlign;
 pub use self::arc::{Arc, ArcMode};
 pub use self::border::BorderSide;
@@ -59,6 +73,7 @@ pub use self::buttonmatrix::{
 };
 pub use self::color::Color;
 pub use self::corner_radius::CornerRadius;
+pub use self::display::init_default_theme;
 pub use self::dropdown::Dropdown;
 pub use self::dropdown_dir::LvDropdownDir;
 pub use self::flex::{FlexAlign, FlexFlow};
@@ -71,16 +86,15 @@ pub use self::keyboard_layout::{
     CTRL_W5, CTRL_W6, CTRLMAP_QWERTY_DE, CTRLMAP_QWERTY_DE_LC, CTRLMAP_QWERTY_DE_UC,
     CTRLMAP_QWERTY_EN, CTRLMAP_QWERTY_EN_LC, CTRLMAP_QWERTY_EN_UC, CTRLMAP_QWERTY_FR,
     CTRLMAP_QWERTY_FR_LC, CTRLMAP_QWERTY_FR_UC, CTRLMAP_QWERTY_FRCH_LC, CTRLMAP_QWERTY_FRCH_UC,
-    CTRLMAP_QWERTY_IT, CTRLMAP_QWERTY_IT_LC, CTRLMAP_QWERTY_IT_UC, CTRLMAP_SPECIAL,
-    CTRLMAP_UA_LC, CTRLMAP_UA_UC,
-    CtrlMap, KEY_123, KEY_ABC, KEY_ABC_LOWER, KEY_BACK, KEY_BACKSPACE, KEY_CONTINUE, KEY_DEL,
-    KEY_LANG, KEY_LANG_CH, KEY_LANG_DE, KEY_LANG_EN, KEY_LANG_FR, KEY_LANG_IT, KEY_LANG_UA, KEY_OK,
-    KEY_SPACE, KEY_SPECIAL, KEYMAP_NUMPAD, KEYMAP_QWERTY_DE, KEYMAP_QWERTY_DE_LC,
-    KEYMAP_QWERTY_DE_UC, KEYMAP_QWERTY_EN, KEYMAP_QWERTY_EN_LC, KEYMAP_QWERTY_EN_UC,
-    KEYMAP_QWERTY_FR, KEYMAP_QWERTY_FR_LC, KEYMAP_QWERTY_FR_UC, KEYMAP_QWERTY_FRCH_LC,
-    KEYMAP_QWERTY_FRCH_UC, KEYMAP_QWERTY_IT, KEYMAP_QWERTY_IT_LC, KEYMAP_QWERTY_IT_UC,
-    KEYMAP_SPECIAL, KEYMAP_UA_LC, KEYMAP_UA_UC, KeyMap, KeyMapEntry, KeyboardLayout, KeyboardLocale,
-    LocaleSwitcher, LvKeyboardMode,
+    CTRLMAP_QWERTY_IT, CTRLMAP_QWERTY_IT_LC, CTRLMAP_QWERTY_IT_UC, CTRLMAP_SPECIAL, CTRLMAP_UA_LC,
+    CTRLMAP_UA_UC, CtrlMap, KEY_123, KEY_ABC, KEY_ABC_LOWER, KEY_BACK, KEY_BACKSPACE, KEY_CONTINUE,
+    KEY_DEL, KEY_LANG, KEY_LANG_CH, KEY_LANG_DE, KEY_LANG_EN, KEY_LANG_FR, KEY_LANG_IT,
+    KEY_LANG_UA, KEY_OK, KEY_SPACE, KEY_SPECIAL, KEYMAP_NUMPAD, KEYMAP_QWERTY_DE,
+    KEYMAP_QWERTY_DE_LC, KEYMAP_QWERTY_DE_UC, KEYMAP_QWERTY_EN, KEYMAP_QWERTY_EN_LC,
+    KEYMAP_QWERTY_EN_UC, KEYMAP_QWERTY_FR, KEYMAP_QWERTY_FR_LC, KEYMAP_QWERTY_FR_UC,
+    KEYMAP_QWERTY_FRCH_LC, KEYMAP_QWERTY_FRCH_UC, KEYMAP_QWERTY_IT, KEYMAP_QWERTY_IT_LC,
+    KEYMAP_QWERTY_IT_UC, KEYMAP_SPECIAL, KEYMAP_UA_LC, KEYMAP_UA_UC, KeyMap, KeyMapEntry,
+    KeyboardLayout, KeyboardLocale, LocaleSwitcher, LvKeyboardMode,
 };
 pub use self::keyboard_theme::KeyboardTheme;
 pub use self::label::Label;
@@ -103,6 +117,6 @@ pub use self::size::Size;
 pub use self::spinner::Spinner;
 pub use self::state::{LvObjFlag, LvState};
 pub use self::static_style::{StaticStyle, StaticStyleProp};
-pub use self::textarea::TextArea;
 pub use self::style::{Style, StyleStore};
+pub use self::textarea::TextArea;
 pub use self::widget::{LvObj, Widget};

@@ -785,70 +785,85 @@ fn restore(button_obj: *mut lv_obj_t, state: &Rc<RefCell<ButtonLoadingState>>) {
     };
 
     unsafe {
-        if !button_delete_ctx.is_null() {
-            c_bindings::lv_obj_remove_event_cb_with_user_data(
-                button_obj,
-                Some(on_loading_object_deleted),
-                button_delete_ctx.cast::<c_void>(),
-            );
-        }
-        if !container.is_null() && !container_delete_ctx.is_null() {
-            c_bindings::lv_obj_remove_event_cb_with_user_data(
-                container,
-                Some(on_loading_object_deleted),
-                container_delete_ctx.cast::<c_void>(),
-            );
-        }
-        if !container.is_null() {
-            c_bindings::lv_obj_delete(container);
+        // The button (and therefore its container and normal children) may
+        // already have been freed by LVGL — e.g. the user navigated away,
+        // deleting the screen, while a minimum-duration timer was still
+        // pending and `finish_pending` was set. Touching those raw pointers
+        // would be a use-after-free. `lv_obj_is_valid` only compares pointer
+        // identity against the live object tree and never dereferences the
+        // pointer, so it is safe to call here. When the button is gone we
+        // skip every `lv_obj_*` operation and only release the Rust-owned
+        // resources below.
+        let button_alive = c_bindings::lv_obj_is_valid(button_obj);
+
+        if button_alive {
+            if !button_delete_ctx.is_null() {
+                c_bindings::lv_obj_remove_event_cb_with_user_data(
+                    button_obj,
+                    Some(on_loading_object_deleted),
+                    button_delete_ctx.cast::<c_void>(),
+                );
+            }
+            if !container.is_null() && !container_delete_ctx.is_null() {
+                c_bindings::lv_obj_remove_event_cb_with_user_data(
+                    container,
+                    Some(on_loading_object_deleted),
+                    container_delete_ctx.cast::<c_void>(),
+                );
+            }
+            if !container.is_null() {
+                c_bindings::lv_obj_delete(container);
+            }
         }
         for child in normal_children {
-            if !child.deleted && !child.delete_ctx.is_null() {
+            if button_alive && !child.deleted && !child.delete_ctx.is_null() {
                 c_bindings::lv_obj_remove_event_cb_with_user_data(
                     child.ptr,
                     Some(on_loading_object_deleted),
                     child.delete_ctx.cast::<c_void>(),
                 );
             }
-            if !child.deleted && !child.was_hidden {
+            if button_alive && !child.deleted && !child.was_hidden {
                 c_bindings::lv_obj_remove_flag(child.ptr, LvObjFlag::HIDDEN.0);
             }
             if !child.delete_ctx.is_null() {
                 drop(Box::from_raw(child.delete_ctx));
             }
         }
-        if remove_disabled {
-            c_bindings::lv_obj_remove_state(button_obj, LvState::DISABLED.0);
+        if button_alive {
+            if remove_disabled {
+                c_bindings::lv_obj_remove_state(button_obj, LvState::DISABLED.0);
+            }
+            // Restore the button's original padding and border by removing the
+            // local style overrides set in `start()`. Falls back to whatever
+            // static styles the caller had attached. See the matching CAVEAT
+            // doc-comment in `start()` for the behavioral implications.
+            c_bindings::lv_obj_remove_local_style_prop(
+                button_obj,
+                LV_STYLE_PAD_TOP,
+                c_bindings::LV_PART_MAIN,
+            );
+            c_bindings::lv_obj_remove_local_style_prop(
+                button_obj,
+                LV_STYLE_PAD_BOTTOM,
+                c_bindings::LV_PART_MAIN,
+            );
+            c_bindings::lv_obj_remove_local_style_prop(
+                button_obj,
+                LV_STYLE_PAD_LEFT,
+                c_bindings::LV_PART_MAIN,
+            );
+            c_bindings::lv_obj_remove_local_style_prop(
+                button_obj,
+                LV_STYLE_PAD_RIGHT,
+                c_bindings::LV_PART_MAIN,
+            );
+            c_bindings::lv_obj_remove_local_style_prop(
+                button_obj,
+                LV_STYLE_BORDER_WIDTH,
+                c_bindings::LV_PART_MAIN,
+            );
         }
-        // Restore the button's original padding and border by removing the
-        // local style overrides set in `start()`. Falls back to whatever
-        // static styles the caller had attached. See the matching CAVEAT
-        // doc-comment in `start()` for the behavioral implications.
-        c_bindings::lv_obj_remove_local_style_prop(
-            button_obj,
-            LV_STYLE_PAD_TOP,
-            c_bindings::LV_PART_MAIN,
-        );
-        c_bindings::lv_obj_remove_local_style_prop(
-            button_obj,
-            LV_STYLE_PAD_BOTTOM,
-            c_bindings::LV_PART_MAIN,
-        );
-        c_bindings::lv_obj_remove_local_style_prop(
-            button_obj,
-            LV_STYLE_PAD_LEFT,
-            c_bindings::LV_PART_MAIN,
-        );
-        c_bindings::lv_obj_remove_local_style_prop(
-            button_obj,
-            LV_STYLE_PAD_RIGHT,
-            c_bindings::LV_PART_MAIN,
-        );
-        c_bindings::lv_obj_remove_local_style_prop(
-            button_obj,
-            LV_STYLE_BORDER_WIDTH,
-            c_bindings::LV_PART_MAIN,
-        );
         if !min_timer.is_null() {
             c_bindings::lv_timer_delete(min_timer);
         }
@@ -936,8 +951,17 @@ mod tests {
         let stored_label = cfg.label_style_value().expect("label_style set");
         let stored_spinner = cfg.spinner_style_value().expect("spinner_style set");
 
-        assert_eq!(stored_container as *const () as usize, container as *const () as usize);
-        assert_eq!(stored_label as *const () as usize, label as *const () as usize);
-        assert_eq!(stored_spinner as *const () as usize, spinner as *const () as usize);
+        assert_eq!(
+            stored_container as *const () as usize,
+            container as *const () as usize
+        );
+        assert_eq!(
+            stored_label as *const () as usize,
+            label as *const () as usize
+        );
+        assert_eq!(
+            stored_spinner as *const () as usize,
+            spinner as *const () as usize
+        );
     }
 }

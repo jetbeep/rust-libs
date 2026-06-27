@@ -46,7 +46,7 @@ pub enum ImageButtonState {
 ///
 /// # Example
 /// ```ignore
-/// use lvgl_dsl::lvgl::prelude::*;
+/// use jetbeep_lvgl_dsl::lvgl::prelude::*;
 ///
 /// // C descriptors (unsafe):
 /// // extern "C" { static BTN_RELEASED: core::ffi::c_void; static BTN_PRESSED: core::ffi::c_void; }

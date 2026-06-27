@@ -1,50 +1,68 @@
-//! Trampolines: C-ABI fns LVGL invokes; each recovers `*mut SearchBar`
+//! Trampolines: C-ABI fns LVGL invokes; each recovers `&SearchBar`
 //! from the user_data we registered on the relevant object/timer,
 //! checks `snap.alive`, and dispatches via the Model A pattern.
 //! Risks #2, #19, #45, #47.
 use crate::c_bindings::{
-    LV_EVENT_CLICKED, LV_EVENT_SCROLL_END, LV_EVENT_VALUE_CHANGED, lv_event_get_user_data,
-    lv_event_t, lv_obj_add_event_cb, lv_obj_remove_event_cb_with_user_data, lv_timer_get_user_data,
-    lv_timer_t,
+    LV_EVENT_CLICKED, LV_EVENT_SCROLL_END, LV_EVENT_VALUE_CHANGED, lv_async_call_cancel,
+    lv_event_get_user_data, lv_event_t, lv_obj_add_event_cb, lv_obj_remove_event_cb_with_user_data,
+    lv_timer_get_user_data, lv_timer_t,
 };
+
+#[cfg(any(test, no_zephyr))]
+fn run_trampoline<F: FnOnce()>(f: F) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+}
+
+#[cfg(not(any(test, no_zephyr)))]
+fn run_trampoline<F: FnOnce()>(f: F) {
+    f();
+}
 
 /// Pinned context that holds the raw SearchBar pointer. Lives inside a
 /// `Box<TrampolineCtx>` owned by `SearchBar` itself — same heap address
-/// as long as `SearchBar` is not moved (boxed), so the pointer we hand
-/// to LVGL stays valid until `Drop`.
+/// as long as the `SearchBar` stays pinned, so the pointer we hand to LVGL
+/// stays valid until `Drop`.
 pub struct TrampolineCtx {
-    pub sb: *mut super::SearchBar,
+    pub sb: *const super::SearchBar,
 }
 
-unsafe fn sb_from_event(e: *mut lv_event_t) -> Option<&'static mut super::SearchBar> {
+unsafe fn sb_from_event(e: *mut lv_event_t) -> Option<&'static super::SearchBar> {
     let ud = unsafe { lv_event_get_user_data(e) } as *mut TrampolineCtx;
     if ud.is_null() {
         return None;
     }
-    let ctx = unsafe { &mut *ud };
+    let ctx = unsafe { &*ud };
     if ctx.sb.is_null() {
         return None;
     }
-    let sb = unsafe { &mut *ctx.sb };
-    if !sb.inner.borrow().snap.alive {
+    let sb = unsafe { &*ctx.sb };
+    let Ok(inner) = sb.inner.try_borrow() else {
+        return None;
+    };
+    if !inner.snap.alive {
         return None;
     }
+    drop(inner);
     Some(sb)
 }
 
-unsafe fn sb_from_timer(t: *mut lv_timer_t) -> Option<&'static mut super::SearchBar> {
+unsafe fn sb_from_timer(t: *mut lv_timer_t) -> Option<&'static super::SearchBar> {
     let ud = unsafe { lv_timer_get_user_data(t) } as *mut TrampolineCtx;
     if ud.is_null() {
         return None;
     }
-    let ctx = unsafe { &mut *ud };
+    let ctx = unsafe { &*ud };
     if ctx.sb.is_null() {
         return None;
     }
-    let sb = unsafe { &mut *ctx.sb };
-    if !sb.inner.borrow().snap.alive {
+    let sb = unsafe { &*ctx.sb };
+    let Ok(inner) = sb.inner.try_borrow() else {
+        return None;
+    };
+    if !inner.snap.alive {
         return None;
     }
+    drop(inner);
     Some(sb)
 }
 
@@ -52,8 +70,11 @@ pub unsafe extern "C" fn on_textarea_value_changed(e: *mut lv_event_t) {
     let Some(sb) = (unsafe { sb_from_event(e) }) else {
         return;
     };
+    let Ok(mut debounce) = sb.debounce.try_borrow_mut() else {
+        return;
+    };
     unsafe {
-        sb.debounce.kick();
+        debounce.kick();
     }
 }
 
@@ -61,14 +82,14 @@ pub unsafe extern "C" fn on_debounce_fire(t: *mut lv_timer_t) {
     let Some(sb) = (unsafe { sb_from_timer(t) }) else {
         return;
     };
-    sb.tick_debounce();
+    run_trampoline(|| sb.tick_debounce());
 }
 
 pub unsafe extern "C" fn on_clear_button_clicked(e: *mut lv_event_t) {
     let Some(sb) = (unsafe { sb_from_event(e) }) else {
         return;
     };
-    sb.clear_query();
+    run_trampoline(|| sb.clear_query());
 }
 
 pub unsafe extern "C" fn on_result_scroll_end(e: *mut lv_event_t) {
@@ -99,14 +120,18 @@ unsafe extern "C" fn on_result_scroll_end_async(ud: *mut core::ffi::c_void) {
     if ctx.sb.is_null() {
         return;
     }
-    let sb = unsafe { &mut *ctx.sb };
-    if !sb.inner.borrow().snap.alive {
+    let sb = unsafe { &*ctx.sb };
+    let Ok(inner) = sb.inner.try_borrow() else {
+        return;
+    };
+    if !inner.snap.alive {
         return;
     }
-    sb.check_scroll_for_load_more();
+    drop(inner);
+    run_trampoline(|| sb.check_scroll_for_load_more());
 }
 
-pub unsafe fn register(sb: *mut super::SearchBar, ctx: *mut TrampolineCtx) {
+pub unsafe fn register(sb: *const super::SearchBar, ctx: *mut TrampolineCtx) {
     let bar = unsafe { &(*sb).bar };
     unsafe {
         lv_obj_add_event_cb(
@@ -130,7 +155,7 @@ pub unsafe fn register(sb: *mut super::SearchBar, ctx: *mut TrampolineCtx) {
     }
 }
 
-pub unsafe fn unregister(sb: *mut super::SearchBar, ctx: *mut TrampolineCtx) {
+pub unsafe fn unregister(sb: *const super::SearchBar, ctx: *mut TrampolineCtx) {
     let bar = unsafe { &(*sb).bar };
     unsafe {
         lv_obj_remove_event_cb_with_user_data(
@@ -148,5 +173,11 @@ pub unsafe fn unregister(sb: *mut super::SearchBar, ctx: *mut TrampolineCtx) {
             Some(on_result_scroll_end),
             ctx as *mut _,
         );
+    }
+}
+
+pub unsafe fn cancel_pending_result_scroll_end(ctx: *mut TrampolineCtx) {
+    unsafe {
+        lv_async_call_cancel(Some(on_result_scroll_end_async), ctx.cast());
     }
 }

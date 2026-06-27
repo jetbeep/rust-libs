@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use crate::c_bindings;
 
@@ -13,12 +14,9 @@ use super::widget::Widget;
 /// A native LVGL style object (`lv_style_t`) with a fluent builder API.
 ///
 /// Styles are heap-allocated so their address is stable — LVGL stores a raw
-/// pointer into the allocation when you call [`apply`](Style::apply).
-///
-/// **Lifetime contract**: the `Style` must outlive every widget it is applied
-/// to.  Store `Style` values in the same struct as your widget handles and
-/// drop them only *after* deleting the LVGL widget tree (i.e. after
-/// `root.delete()`).
+/// pointer into the allocation when you call [`apply`](Style::apply). Dynamic
+/// styles track every widget they are applied to and remove themselves from
+/// still-live widgets before `lv_style_reset` frees LVGL-internal storage.
 ///
 /// ```rust,ignore
 /// let style = Style::new()
@@ -34,6 +32,13 @@ pub struct Style {
     /// Heap-allocated so the address never moves — LVGL holds a raw pointer here.
     inner: Box<c_bindings::lv_style_t>,
     image_sources: Vec<ImageSrc>,
+    attachments: RefCell<Vec<StyleAttachment>>,
+}
+
+#[derive(Clone, Copy)]
+struct StyleAttachment {
+    obj: *mut c_bindings::lv_obj_t,
+    selector: u32,
 }
 
 impl Style {
@@ -45,12 +50,22 @@ impl Style {
         Self {
             inner,
             image_sources: Vec::new(),
+            attachments: RefCell::new(Vec::new()),
         }
     }
 
     // SAFETY: inner is heap-allocated; the pointer is stable for the Style's lifetime.
     pub(super) fn as_raw(&self) -> *const c_bindings::lv_style_t {
         self.inner.as_ref()
+    }
+
+    pub(super) fn apply_to_raw(&self, obj: *mut c_bindings::lv_obj_t, selector: u32) {
+        self.attachments
+            .borrow_mut()
+            .push(StyleAttachment { obj, selector });
+        unsafe {
+            c_bindings::lv_obj_add_style(obj, self.as_raw(), selector);
+        }
     }
 
     // ── Builder methods ────────────────────────────────────────────────────────
@@ -183,17 +198,25 @@ impl Style {
 
 impl Drop for Style {
     fn drop(&mut self) {
+        let style = self.as_raw();
+        for attachment in self.attachments.get_mut().drain(..).rev() {
+            unsafe {
+                if c_bindings::lv_obj_is_valid(attachment.obj) {
+                    c_bindings::lv_obj_remove_style(attachment.obj, style, attachment.selector);
+                }
+            }
+        }
         // Frees the LVGL-internal `values_and_props` allocation.
-        // Safe only after all widgets using this style have been deleted.
         unsafe { c_bindings::lv_style_reset(self.inner.as_mut()) };
     }
 }
 
-/// Owns a collection of [`Style`] values that must outlive the widget tree.
+/// Owns a collection of [`Style`] values for a widget tree.
 ///
-/// LVGL holds raw pointers into each `lv_style_t` after `lv_obj_add_style`.
+/// LVGL holds raw pointers into each `lv_style_t` after `lv_obj_add_style`;
 /// `StyleStore` keeps those allocations alive until [`release`](StyleStore::release)
-/// is called — which must happen *after* the root widget is deleted.
+/// or until the store itself is dropped. Releasing a store detaches each style
+/// from still-live widgets before resetting its LVGL storage.
 ///
 /// ```rust,ignore
 /// // build_ui — apply styles while they're locals, then move into the store
@@ -202,7 +225,7 @@ impl Drop for Style {
 /// btn2.add_style(&btn_style);
 /// self.styles.keep(btn_style);
 ///
-/// // destroy_ui — after root.delete()
+/// // destroy_ui
 /// self.styles.release();
 /// ```
 pub struct StyleStore(Vec<Style>);
@@ -218,7 +241,7 @@ impl StyleStore {
         self.0.last().unwrap()
     }
 
-    /// Drop all stored styles. Call this only after the LVGL widget tree has been deleted.
+    /// Drop all stored styles, detaching them from any still-live widgets first.
     pub fn release(&mut self) {
         self.0.clear();
     }
@@ -227,8 +250,10 @@ impl StyleStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c_bindings::{spy_drain, LvCall};
+    use crate::c_bindings::{LvCall, reset_obj_pool, spy_drain};
+    use crate::lvgl::button::Button;
     use crate::lvgl::image::ImageSrc;
+    use crate::lvgl::screen::Screen;
 
     #[test]
     fn style_background_image_builders_retain_source_and_call_lvgl() {
@@ -262,6 +287,85 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, LvCall::SetStyleBgImageTiled { tiled: false, .. })),
             "expected SetStyleBgImageTiled{{false}} in spy: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn dropping_applied_style_removes_it_before_resetting_storage() {
+        reset_obj_pool();
+        let screen = Screen::active();
+        let button = Button::new(&screen);
+        spy_drain();
+
+        let style = Style::new().bg_color(Color::white());
+        let style_ptr = style.as_raw() as usize;
+        let obj = button.lv_obj().raw() as usize;
+
+        style.apply(&button);
+        drop(style);
+
+        let calls = spy_drain();
+        let remove_index = calls
+            .iter()
+            .position(|call| {
+                matches!(
+                    call,
+                    LvCall::ObjRemoveStyle {
+                        obj: recorded_obj,
+                        style: recorded_style,
+                        selector: 0,
+                    } if *recorded_obj == obj && *recorded_style == style_ptr
+                )
+            })
+            .expect("expected ObjRemoveStyle before reset");
+        let reset_index = calls
+            .iter()
+            .position(|call| {
+                matches!(
+                    call,
+                    LvCall::StyleReset {
+                        style: recorded_style
+                    } if *recorded_style == style_ptr
+                )
+            })
+            .expect("expected StyleReset");
+
+        assert!(
+            remove_index < reset_index,
+            "style must be removed before reset frees LVGL storage: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn style_store_release_detaches_kept_styles_before_resetting_storage() {
+        reset_obj_pool();
+        let screen = Screen::active();
+        let button = Button::new(&screen);
+        spy_drain();
+
+        let mut store = StyleStore::new();
+        let style = store.keep(Style::new().bg_color(Color::white()));
+        let style_ptr = style.as_raw() as usize;
+        let obj = button.lv_obj().raw() as usize;
+        style.apply(&button);
+
+        store.release();
+
+        let calls = spy_drain();
+        assert!(
+            calls.iter().any(|call| {
+                matches!(
+                    call,
+                    LvCall::ObjRemoveStyle {
+                        obj: recorded_obj,
+                        style: recorded_style,
+                        selector: 0,
+                    } if *recorded_obj == obj && *recorded_style == style_ptr
+                )
+            }),
+            "StyleStore::release must detach styles before reset: {:?}",
             calls
         );
     }

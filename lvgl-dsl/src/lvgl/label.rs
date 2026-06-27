@@ -7,11 +7,11 @@ use super::widget::{LvObj, Widget};
 
 #[repr(u32)]
 pub enum LvLabelLongMode {
-    Wrap = c_bindings::LV_LABEL_LONG_WRAP,
-    Dot = c_bindings::LV_LABEL_LONG_DOT,
-    Scroll = c_bindings::LV_LABEL_LONG_SCROLL,
-    ScrollCircular = c_bindings::LV_LABEL_LONG_SCROLL_CIRC,
-    Clip = c_bindings::LV_LABEL_LONG_CLIP,
+    Wrap = c_bindings::LV_LABEL_LONG_MODE_WRAP,
+    Dot = c_bindings::LV_LABEL_LONG_MODE_DOTS,
+    Scroll = c_bindings::LV_LABEL_LONG_MODE_SCROLL,
+    ScrollCircular = c_bindings::LV_LABEL_LONG_MODE_SCROLL_CIRCULAR,
+    Clip = c_bindings::LV_LABEL_LONG_MODE_CLIP,
 }
 
 /// LVGL label widget (`lv_label`).

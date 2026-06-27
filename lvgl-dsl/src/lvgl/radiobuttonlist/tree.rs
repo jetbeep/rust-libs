@@ -2,8 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_char;
 
-use crate::c_bindings;
 use super::types::RadioButtonListConfig;
+use crate::c_bindings;
 
 // Indicator and label handles are created in Task 2 and consumed by Task 3 styling.
 pub(crate) struct RowWidgets {
@@ -89,6 +89,10 @@ pub(crate) unsafe fn build(
                 super::super::FlexAlign::Center as u32,
             );
             c_bindings::lv_obj_set_size(row, c_bindings::lv_pct(100), cfg.row_height);
+            // Rows are fixed-height pills; never let them scroll. Without this,
+            // a label whose line-height slightly exceeds the row's inner height
+            // makes the row scrollable and renders a per-row scrollbar.
+            c_bindings::lv_obj_remove_flag(row, super::super::LvObjFlag::SCROLLABLE.0);
             c_bindings::lv_obj_set_style_pad_left(row, cfg.pad_h, 0);
             c_bindings::lv_obj_set_style_pad_right(row, cfg.pad_h, 0);
             c_bindings::lv_obj_set_style_pad_top(row, cfg.pad_v, 0);
@@ -110,7 +114,11 @@ pub(crate) unsafe fn build(
             c_bindings::lv_obj_set_style_pad_left(inner_dot, 0, 0);
             c_bindings::lv_obj_set_style_pad_right(inner_dot, 0, 0);
             c_bindings::lv_obj_set_style_border_width(inner_dot, 0, 0);
-            c_bindings::lv_obj_set_style_radius(inner_dot, super::super::CornerRadius::Full.into_lv_value(), 0);
+            c_bindings::lv_obj_set_style_radius(
+                inner_dot,
+                super::super::CornerRadius::Full.into_lv_value(),
+                0,
+            );
             c_bindings::lv_obj_set_style_bg_opa(inner_dot, 0, 0);
             // Label container: invisible flex-row, content-sized, zero gap between children.
             c_bindings::lv_obj_set_size(label_container, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -132,12 +140,22 @@ pub(crate) unsafe fn build(
             c_bindings::lv_obj_remove_flag(label_container, super::super::LvObjFlag::CLICKABLE.0);
             c_bindings::lv_label_set_text(label, label_buf.as_ptr() as *const c_char);
             match &dim_buf {
-                None => { c_bindings::lv_obj_add_flag(dim_label, super::super::LvObjFlag::HIDDEN.0); }
-                Some(buf) => { c_bindings::lv_label_set_text(dim_label, buf.as_ptr() as *const c_char); }
+                None => {
+                    c_bindings::lv_obj_add_flag(dim_label, super::super::LvObjFlag::HIDDEN.0);
+                }
+                Some(buf) => {
+                    c_bindings::lv_label_set_text(dim_label, buf.as_ptr() as *const c_char);
+                }
             }
         }
 
-        rows.push(RowWidgets { row, indicator, inner_dot, label, dim_label });
+        rows.push(RowWidgets {
+            row,
+            indicator,
+            inner_dot,
+            label,
+            dim_label,
+        });
     }
 
     Tree { root, rows }

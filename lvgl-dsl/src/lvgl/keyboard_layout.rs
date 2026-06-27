@@ -29,7 +29,7 @@ impl KeyMapEntry {
     /// [`KeyMap`].  Accepts `c"..."` literals directly.
     ///
     /// ```rust
-    /// use lvgl_dsl::lvgl::prelude::*;
+    /// use jetbeep_lvgl_dsl::lvgl::prelude::*;
     /// static MY_MAP: &KeyMap = &[
     ///     KeyMapEntry::new(c"A"), KeyMapEntry::new(c"B"),
     ///     KeyMapEntry::new(c"\n"),
@@ -66,18 +66,14 @@ pub enum LvKeyboardMode {
     Special = 2,
     /// Numeric pad (LVGL built-in).
     Number = 3,
-    /// User-defined layout slot 1 — used for [`KeyboardLayout::Custom`].
+    /// User-defined layout slot 1.
     User1 = 4,
-    /// User-defined layout slot 2 — used for [`KeyboardLocale::De`].
+    /// User-defined layout slot 2.
     User2 = 5,
-    /// User-defined layout slot 3 — used for [`KeyboardLocale::Fr`].
+    /// User-defined layout slot 3.
     User3 = 6,
-    /// User-defined layout slot 4 — used for [`KeyboardLocale::It`].
+    /// User-defined layout slot 4.
     User4 = 7,
-    /// User-defined layout slot 5 — used for [`KeyboardLocale::FrCh`].
-    User5 = 8,
-    /// User-defined layout slot 6 — used for [`KeyboardLocale::Ua`].
-    User6 = 9,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,11 +153,10 @@ pub const CTRL_SPACER: u32 = CTRL_HIDDEN | CTRL_W1;
 
 /// Language/locale shorthand for selecting a keyboard layout.
 ///
-/// Locales that use LVGL built-in maps (`EnUs`, `Numeric`) only call
-/// `lv_keyboard_set_mode`.  Locales that use a custom map (`De`, `Fr`, `It`)
-/// also call `lv_keyboard_set_map` into a dedicated [`LvKeyboardMode`] slot
-/// — `User2`, `User3`, `User4` respectively — leaving `User1` free for
-/// [`KeyboardLayout::Custom`].
+/// `Numeric` uses LVGL's built-in Number mode. Text locales install custom
+/// maps; the keyboard widget assigns those maps to LVGL's real mode range
+/// (`TEXT_LOWER`/`TEXT_UPPER` for `EnUs`, `USER_1..USER_4` for other locales)
+/// at runtime.
 ///
 /// This enum is `#[non_exhaustive]` so downstream crates can extend it via
 /// their own `impl From<MyLocale> for KeyboardLayout` without requiring
@@ -180,27 +175,28 @@ pub enum KeyboardLocale {
     /// Numeric-only input.  Uses LVGL built-in `Number`.
     Numeric,
     /// German QWERTZ — `y`↔`z` transposed, `ü`/`ö`/`ä`/`ß` included.
-    /// Installed into [`LvKeyboardMode::User2`].
+    /// Installed into a runtime `USER_1..USER_4` slot.
     De,
     /// French AZERTY — `a`/`z` row 1, `q`/`s` row 2, `é` row 3.
-    /// Installed into [`LvKeyboardMode::User3`].
+    /// Installed into a runtime `USER_1..USER_4` slot.
     Fr,
     /// Italian QWERTY — standard rows with `à`/`è`/`ì`/`ò`/`ù` accent row.
-    /// Installed into [`LvKeyboardMode::User4`].
+    /// Installed into a runtime `USER_1..USER_4` slot.
     It,
     /// Swiss French QWERTZ — `z`↔`y` transposed, `é`/`è`/`à`/`ç` accent row.
-    /// Installed into [`LvKeyboardMode::User5`].
+    /// Installed into a runtime `USER_1..USER_4` slot.
     FrCh,
     /// Ukrainian ЙЦУКЕН — standard Cyrillic layout.
-    /// Installed into [`LvKeyboardMode::User6`].
+    /// Installed into a runtime `USER_1..USER_4` slot.
     Ua,
 }
 
 impl KeyboardLocale {
-    /// Returns the LVGL mode integer for this locale.
+    /// Returns a safe fallback LVGL mode integer for this locale.
     ///
-    /// Built-in locales use their native LVGL mode; language locales use a
-    /// dedicated User slot (see [`LvKeyboardMode`]).
+    /// The keyboard widget keeps the authoritative runtime locale→user-slot
+    /// assignment. This fallback is used only by layout-level tests and by
+    /// defensive paths where no keyboard state is available.
     #[inline]
     pub(crate) fn native_mode(self) -> u32 {
         match self {
@@ -209,8 +205,8 @@ impl KeyboardLocale {
             KeyboardLocale::De => LvKeyboardMode::User2 as u32,
             KeyboardLocale::Fr => LvKeyboardMode::User3 as u32,
             KeyboardLocale::It => LvKeyboardMode::User4 as u32,
-            KeyboardLocale::FrCh => LvKeyboardMode::User5 as u32,
-            KeyboardLocale::Ua => LvKeyboardMode::User6 as u32,
+            KeyboardLocale::FrCh => LvKeyboardMode::User1 as u32,
+            KeyboardLocale::Ua => LvKeyboardMode::User1 as u32,
         }
     }
 
@@ -294,11 +290,9 @@ impl KeyboardLocale {
 /// | `QwertyUpper` | `TextUpper` (built-in) | no |
 /// | `NumberPad` | `Number` (built-in) | no |
 /// | `SpecialChars` | `Special` (built-in) | no |
-/// | `Locale(EnUs)` | `TextLower` (built-in) | no |
+/// | `Locale(EnUs)` | `TextLower` | yes — `KEYMAP_QWERTY_EN_*` |
 /// | `Locale(Numeric)` | `Number` (built-in) | no |
-/// | `Locale(De)` | `User2` | yes — `KEYMAP_QWERTY_DE` |
-/// | `Locale(Fr)` | `User3` | yes — `KEYMAP_QWERTY_FR` |
-/// | `Locale(It)` | `User4` | yes — `KEYMAP_QWERTY_IT` |
+/// | `Locale(De/Fr/It/FrCh/Ua)` | runtime `User1..User4` slot | yes — locale keymap pair |
 /// | `Custom(map)` | `User1` | yes — caller-supplied |
 #[derive(Copy, Clone)]
 pub enum KeyboardLayout {
@@ -371,7 +365,7 @@ impl From<KeyboardLocale> for KeyboardLayout {
 /// # Example
 ///
 /// ```rust,ignore
-/// use lvgl_dsl::lvgl::prelude::*;
+/// use jetbeep_lvgl_dsl::lvgl::prelude::*;
 ///
 /// static LOCALES: LocaleSwitcher<3> = LocaleSwitcher::new([
 ///     KeyboardLocale::EnUs,
@@ -1030,6 +1024,8 @@ pub static KEYMAP_SPECIAL: &KeyMap = &[
 /// 38 entries = 11 + 12 + 12 + 3.
 pub static CTRLMAP_SPECIAL: &CtrlMap = &[
     // Row 1 — 10 digits(1) + Del(2)
+    // Only the Continue CTA keeps CTRL_CHECKED (orange fill); every other
+    // action key renders as a normal gray-border key.
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
@@ -1040,9 +1036,9 @@ pub static CTRLMAP_SPECIAL: &CtrlMap = &[
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
-    CTRL_W2 | CTRL_CHECKED,
+    CTRL_W2,
     // Row 2 — abc(2) + 11 symbols(1)
-    CTRL_W2 | CTRL_CHECKED,
+    CTRL_W2,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
@@ -1068,7 +1064,7 @@ pub static CTRLMAP_SPECIAL: &CtrlMap = &[
     CTRL_W1,
     CTRL_W1,
     // Row 4 — Back(4) + space(7) + Continue(4)
-    CTRL_W4 | CTRL_CHECKED,
+    CTRL_W4,
     CTRL_SPACE_W,
     CTRL_W4 | CTRL_CHECKED,
 ];
@@ -1165,8 +1161,10 @@ pub static CTRLMAP_QWERTY_EN_LC: &CtrlMap = &[
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
-    // Row 3 — ABC(2) + 7 letters(1) + Del(2)  [action keys checked]
-    CTRL_W2 | CTRL_CHECKED,
+    // Row 3 — ABC(2) + 7 letters(1) + Del(2)
+    // Only the Continue CTA keeps CTRL_CHECKED (orange fill); every other
+    // action key renders as a normal gray-border key.
+    CTRL_W2,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
@@ -1174,11 +1172,11 @@ pub static CTRLMAP_QWERTY_EN_LC: &CtrlMap = &[
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
-    CTRL_W2 | CTRL_CHECKED,
-    // Row 4 — Back(3) + EN(1) + 123(1) + space(6) + Continue(3)  [action keys checked]
-    CTRL_W3 | CTRL_CHECKED,
-    CTRL_W1 | CTRL_CHECKED,
-    CTRL_W1 | CTRL_CHECKED,
+    CTRL_W2,
+    // Row 4 — Back(3) + EN(1) + 123(1) + space(6) + Continue(3)
+    CTRL_W3,
+    CTRL_W1,
+    CTRL_W1,
     CTRL_W6,
     CTRL_W3 | CTRL_CHECKED,
 ];
@@ -1430,19 +1428,21 @@ pub static CTRLMAP_QWERTY_FR_LC: &CtrlMap = &[
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
-    // Row 3  [action keys checked]
-    CTRL_W2 | CTRL_CHECKED,
+    // Row 3
+    // Only the Continue CTA keeps CTRL_CHECKED (orange fill); every other
+    // action key renders as a normal gray-border key.
+    CTRL_W2,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
     CTRL_W1,
-    CTRL_W2 | CTRL_CHECKED,
-    // Row 4 — navigation  [action keys checked]
-    CTRL_W3 | CTRL_CHECKED,
-    CTRL_W1 | CTRL_CHECKED,
-    CTRL_W1 | CTRL_CHECKED,
+    CTRL_W2,
+    // Row 4 — navigation
+    CTRL_W3,
+    CTRL_W1,
+    CTRL_W1,
     CTRL_W6,
     CTRL_W3 | CTRL_CHECKED,
 ];
@@ -1621,7 +1621,7 @@ pub static CTRLMAP_QWERTY_IT_UC: &CtrlMap = CTRLMAP_QWERTY_IT_LC;
 /// Classic QWERTZ transposition: `z`↔`y`.  Home row has `m` at end (like
 /// French AZERTY).
 ///
-/// Installed into [`LvKeyboardMode::User5`].
+/// Installed into a runtime `USER_1..USER_4` slot.
 pub static KEYMAP_QWERTY_FRCH_LC: &KeyMap = &[
     // Row 1 — QWERTZ
     k!(c"q"),
@@ -1946,14 +1946,12 @@ mod tests {
         CTRLMAP_QWERTY_DE, CTRLMAP_QWERTY_DE_LC, CTRLMAP_QWERTY_DE_UC, CTRLMAP_QWERTY_EN,
         CTRLMAP_QWERTY_EN_LC, CTRLMAP_QWERTY_EN_UC, CTRLMAP_QWERTY_FR, CTRLMAP_QWERTY_FR_LC,
         CTRLMAP_QWERTY_FR_UC, CTRLMAP_QWERTY_FRCH_LC, CTRLMAP_QWERTY_FRCH_UC, CTRLMAP_QWERTY_IT,
-        CTRLMAP_QWERTY_IT_LC, CTRLMAP_QWERTY_IT_UC, CTRLMAP_SPECIAL, CTRLMAP_UA_LC,
-        CTRLMAP_UA_UC, KEYMAP_NUMPAD,
-        KEYMAP_QWERTY_DE, KEYMAP_QWERTY_DE_LC, KEYMAP_QWERTY_DE_UC, KEYMAP_QWERTY_EN,
-        KEYMAP_QWERTY_EN_LC, KEYMAP_QWERTY_EN_UC, KEYMAP_QWERTY_FR, KEYMAP_QWERTY_FR_LC,
-        KEYMAP_QWERTY_FR_UC, KEYMAP_QWERTY_FRCH_LC, KEYMAP_QWERTY_FRCH_UC, KEYMAP_QWERTY_IT,
-        KEYMAP_QWERTY_IT_LC, KEYMAP_QWERTY_IT_UC, KEYMAP_SPECIAL, KEYMAP_UA_LC, KEYMAP_UA_UC,
-        KeyMap,
-        KeyboardLayout, KeyboardLocale, LocaleSwitcher, LvKeyboardMode,
+        CTRLMAP_QWERTY_IT_LC, CTRLMAP_QWERTY_IT_UC, CTRLMAP_SPECIAL, CTRLMAP_UA_LC, CTRLMAP_UA_UC,
+        KEYMAP_NUMPAD, KEYMAP_QWERTY_DE, KEYMAP_QWERTY_DE_LC, KEYMAP_QWERTY_DE_UC,
+        KEYMAP_QWERTY_EN, KEYMAP_QWERTY_EN_LC, KEYMAP_QWERTY_EN_UC, KEYMAP_QWERTY_FR,
+        KEYMAP_QWERTY_FR_LC, KEYMAP_QWERTY_FR_UC, KEYMAP_QWERTY_FRCH_LC, KEYMAP_QWERTY_FRCH_UC,
+        KEYMAP_QWERTY_IT, KEYMAP_QWERTY_IT_LC, KEYMAP_QWERTY_IT_UC, KEYMAP_SPECIAL, KEYMAP_UA_LC,
+        KEYMAP_UA_UC, KeyMap, KeyboardLayout, KeyboardLocale, LocaleSwitcher, LvKeyboardMode,
     };
 
     // ------------------------------------------------------------------
@@ -2070,10 +2068,21 @@ mod tests {
     }
 
     #[test]
-    fn locale_frch_maps_to_user5_with_map() {
-        let layout = KeyboardLayout::Locale(KeyboardLocale::FrCh);
-        assert_eq!(layout.lv_mode(), LvKeyboardMode::User5 as u32);
-        assert!(layout.maps().is_some(), "FrCh must provide a custom map");
+    fn locale_modes_stay_within_lvgl_v93_range() {
+        for locale in [
+            KeyboardLocale::EnUs,
+            KeyboardLocale::Numeric,
+            KeyboardLocale::De,
+            KeyboardLocale::Fr,
+            KeyboardLocale::It,
+            KeyboardLocale::FrCh,
+            KeyboardLocale::Ua,
+        ] {
+            assert!(
+                locale.native_mode() < 8,
+                "{locale:?} must not map outside LVGL v9.3 keyboard modes 0..=7"
+            );
+        }
     }
 
     // ------------------------------------------------------------------
@@ -2351,7 +2360,11 @@ mod tests {
                 !s.to_bytes().is_empty() && s.to_bytes() != b"\n"
             })
             .count();
-        assert_eq!(key_count, CTRLMAP_SPECIAL.len(), "KEYMAP_SPECIAL keys vs CTRLMAP_SPECIAL");
+        assert_eq!(
+            key_count,
+            CTRLMAP_SPECIAL.len(),
+            "KEYMAP_SPECIAL keys vs CTRLMAP_SPECIAL"
+        );
         assert_eq!(key_count, 38);
     }
 

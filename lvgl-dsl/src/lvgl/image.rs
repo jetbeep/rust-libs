@@ -105,6 +105,18 @@ impl ImageSrc {
             ImageSrcKind::StaticFile(path) => path.as_ptr().cast::<c_void>(),
         }
     }
+
+    /// Immediately drops this image from LVGL's decoded-image cache instead of
+    /// waiting for LRU eviction, freeing its (possibly large) decoded buffer.
+    ///
+    /// Call this when a cached image scrolls off-screen or its owning view is
+    /// torn down and the memory is wanted back *now*. A no-op if the image is
+    /// not currently cached; if it is still referenced, LVGL marks the entry
+    /// invalid and frees it once the last reference is released.
+    #[inline]
+    pub fn cache_drop(&self) {
+        unsafe { c_bindings::lv_image_cache_drop(self.as_ptr()) };
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -160,9 +172,7 @@ fn with_image_retention_store<R>(
     struct Unlock;
     impl Drop for Unlock {
         fn drop(&mut self) {
-            IMAGE_RETENTION_STORE
-                .locked
-                .store(false, Ordering::Release);
+            IMAGE_RETENTION_STORE.locked.store(false, Ordering::Release);
         }
     }
     let _unlock = Unlock;
@@ -191,8 +201,7 @@ pub(crate) fn set_retained_src_for_obj(
             retained.cast::<c_void>(),
         );
     }
-    let previous =
-        with_image_retention_store(|store| store.insert((obj as usize, slot), retained));
+    let previous = with_image_retention_store(|store| store.insert((obj as usize, slot), retained));
     apply(src_ptr);
     if let Some(previous) = previous {
         unsafe {
@@ -260,7 +269,7 @@ pub(crate) fn reset_retained_image_srcs() {
 ///
 /// # Example
 /// ```ignore
-/// use lvgl_dsl::lvgl::prelude::*;
+/// use jetbeep_lvgl_dsl::lvgl::prelude::*;
 ///
 /// // C descriptor (unsafe):
 /// // extern "C" { static MY_ICON: core::ffi::c_void; }
@@ -392,11 +401,7 @@ impl Image {
     /// raster while preserving alpha.
     pub fn recolor(&self, color: crate::lvgl::color::Color) -> &Self {
         unsafe {
-            c_bindings::lv_obj_set_style_image_recolor(
-                self.lv_obj().raw(),
-                color.to_lv(),
-                0,
-            );
+            c_bindings::lv_obj_set_style_image_recolor(self.lv_obj().raw(), color.to_lv(), 0);
         }
         self
     }
@@ -408,11 +413,7 @@ impl Image {
     /// recolor value, intermediate values blend.
     pub fn recolor_opa(&self, opa: u8) -> &Self {
         unsafe {
-            c_bindings::lv_obj_set_style_image_recolor_opa(
-                self.lv_obj().raw(),
-                opa,
-                0,
-            );
+            c_bindings::lv_obj_set_style_image_recolor_opa(self.lv_obj().raw(), opa, 0);
         }
         self
     }
@@ -505,9 +506,7 @@ mod tests {
             calls
         );
         assert!(
-            calls
-                .iter()
-                .any(|c| matches!(c, LvCall::AddEventCb { .. })),
+            calls.iter().any(|c| matches!(c, LvCall::AddEventCb { .. })),
             "expected new retained source delete callback registration: {:?}",
             calls
         );
@@ -542,7 +541,11 @@ mod tests {
         // LVGL's internal pixel format.
         let bytes: [u8; core::mem::size_of::<crate::c_bindings::lv_color_t>()] =
             unsafe { core::mem::transmute(recolor) };
-        assert!(bytes.iter().all(|b| *b == 0xFF), "expected white tint, got {:?}", bytes);
+        assert!(
+            bytes.iter().all(|b| *b == 0xFF),
+            "expected white tint, got {:?}",
+            bytes
+        );
     }
 
     #[test]

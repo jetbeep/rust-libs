@@ -16,6 +16,12 @@ impl LvState {
     pub const PRESSED: LvState = LvState(0x0020);
     pub const SCROLLED: LvState = LvState(0x0040);
     pub const DISABLED: LvState = LvState(0x0080);
+
+    /// Returns the raw value as an `lv_style_selector_t` for the
+    /// `lv_obj_set_style_*` FFI, which takes the selector as a `u32`.
+    pub(crate) const fn selector(self) -> u32 {
+        self.0 as u32
+    }
 }
 
 impl BitOr for LvState {
@@ -42,6 +48,7 @@ impl LvObjFlag {
     pub const EVENT_BUBBLE: LvObjFlag = LvObjFlag(1 << 14);
     pub const IGNORE_LAYOUT: LvObjFlag = LvObjFlag(1 << 17);
     pub const FLOATING: LvObjFlag = LvObjFlag(1 << 18);
+    pub const SEND_DRAW_TASK_EVENTS: LvObjFlag = LvObjFlag(1 << 19);
     pub const OVERFLOW_VISIBLE: LvObjFlag = LvObjFlag(1 << 20);
 }
 
@@ -87,6 +94,10 @@ mod tests {
     #[test]
     fn flag_floating_is_bit_18() {
         assert_eq!(LvObjFlag::FLOATING.0, 1u32 << 18);
+    }
+    #[test]
+    fn flag_send_draw_task_events_is_bit_19() {
+        assert_eq!(LvObjFlag::SEND_DRAW_TASK_EVENTS.0, 1u32 << 19);
     }
     #[test]
     fn flag_bitor_combines_bits() {

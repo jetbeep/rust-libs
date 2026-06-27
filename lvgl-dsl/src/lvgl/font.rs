@@ -6,14 +6,13 @@ pub struct Font {
 }
 
 impl Font {
-  
     pub const fn montserrat_48() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_48` is a static LVGL font symbol — never dangling.
             font: &raw const c_bindings::lv_font_montserrat_48,
         }
     }
-  
+
     pub const fn montserrat_40() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_40` is a static LVGL font symbol — never dangling.

@@ -91,14 +91,52 @@ impl Default for RadioButtonListConfig {
 }
 
 pub(crate) fn assert_valid_options(labels: &[&str]) {
-    assert!(!labels.is_empty(), "RadioButtonList requires at least one option");
+    assert!(
+        !labels.is_empty(),
+        "RadioButtonList requires at least one option"
+    );
+}
+
+/// `dim_labels` must be empty or exactly match `labels` in length; anything
+/// else is a caller bug (rows would silently gain ""/lose entries).
+pub(crate) fn assert_valid_dim_labels(labels: &[&str], dim_labels: &[&str]) {
+    assert!(
+        dim_labels.is_empty() || dim_labels.len() == labels.len(),
+        "RadioButtonList dim_labels must be empty or match labels length ({} != {})",
+        dim_labels.len(),
+        labels.len()
+    );
 }
 
 pub(crate) fn assert_valid_config(cfg: RadioButtonListConfig) {
-    assert!(cfg.row_height > 0, "RadioButtonList row height must be positive, got {}", cfg.row_height);
-    assert!(cfg.indicator_size > 0, "RadioButtonList indicator size must be positive, got {}", cfg.indicator_size);
-    assert!(cfg.gap >= 0, "RadioButtonList gap must be non-negative, got {}", cfg.gap);
-    assert!(cfg.pad_h >= 0, "RadioButtonList horizontal padding must be non-negative, got {}", cfg.pad_h);
-    assert!(cfg.pad_v >= 0, "RadioButtonList vertical padding must be non-negative, got {}", cfg.pad_v);
-    assert!(cfg.indicator_label_gap >= 0, "RadioButtonList indicator-label gap must be non-negative, got {}", cfg.indicator_label_gap);
+    assert!(
+        cfg.row_height > 0,
+        "RadioButtonList row height must be positive, got {}",
+        cfg.row_height
+    );
+    assert!(
+        cfg.indicator_size > 0,
+        "RadioButtonList indicator size must be positive, got {}",
+        cfg.indicator_size
+    );
+    assert!(
+        cfg.gap >= 0,
+        "RadioButtonList gap must be non-negative, got {}",
+        cfg.gap
+    );
+    assert!(
+        cfg.pad_h >= 0,
+        "RadioButtonList horizontal padding must be non-negative, got {}",
+        cfg.pad_h
+    );
+    assert!(
+        cfg.pad_v >= 0,
+        "RadioButtonList vertical padding must be non-negative, got {}",
+        cfg.pad_v
+    );
+    assert!(
+        cfg.indicator_label_gap >= 0,
+        "RadioButtonList indicator-label gap must be non-negative, got {}",
+        cfg.indicator_label_gap
+    );
 }

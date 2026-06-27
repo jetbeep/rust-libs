@@ -5,6 +5,50 @@
 #[cfg(not(any(test, no_zephyr)))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+#[cfg(any(test, all(no_zephyr, desktop_sim, not(test))))]
+fn arc_angle_to_desktop_precise(deg: i32) -> f32 {
+    deg as f32
+}
+
+// ============================================================
+//  Shared LVGL v9.3 constant values.
+//
+//  Single source for the enum/constant values used by both the
+//  desktop-sim layer and the mock layer, so the two can never
+//  drift apart again. Values are anchored to the v9.3.0 headers
+//  (third_party/lvgl pinned to v9.3.0 in the parent repo); the
+//  desktop build additionally cross-checks them against the real
+//  headers via build.rs's C ABI probe.
+// ============================================================
+#[cfg(any(test, no_zephyr))]
+mod lv_shared_consts {
+    pub const LV_FLEX_FLOW_ROW: u32 = 0x00;
+    pub const LV_FLEX_FLOW_COLUMN: u32 = 0x01;
+
+    pub const LV_LABEL_LONG_MODE_WRAP: u32 = 0;
+    pub const LV_LABEL_LONG_MODE_DOTS: u32 = 1;
+    pub const LV_LABEL_LONG_MODE_SCROLL: u32 = 2;
+    pub const LV_LABEL_LONG_MODE_SCROLL_CIRCULAR: u32 = 3;
+    pub const LV_LABEL_LONG_MODE_CLIP: u32 = 4;
+
+    // v9.3.0 src/misc/lv_event.h numbering.
+    pub const LV_EVENT_CLICKED: u32 = 10;
+    pub const LV_EVENT_SCROLL_END: u32 = 14;
+    pub const LV_EVENT_VALUE_CHANGED: u32 = 35;
+    pub const LV_EVENT_DELETE: u32 = 41;
+
+    pub const LV_ANIM_REPEAT_INFINITE: u32 = 0xFFFF_FFFF;
+
+    pub const LV_PART_MAIN: u32 = 0x000000;
+    pub const LV_PART_SCROLLBAR: u32 = 0x010000;
+    pub const LV_PART_INDICATOR: u32 = 0x020000;
+    pub const LV_PART_KNOB: u32 = 0x030000;
+
+    pub const LV_ARC_MODE_NORMAL: u32 = 0;
+    pub const LV_ARC_MODE_SYMMETRICAL: u32 = 1;
+    pub const LV_ARC_MODE_REVERSE: u32 = 2;
+}
+
 // ============================================================
 //  Desktop simulator layer — active when building inside the
 //  screen-sdl CMake project (LVGL_INCLUDE_DIRS env var set by
@@ -48,6 +92,30 @@ mod desktop {
     pub struct lv_indev_t {
         _opaque: [u8; 0],
     }
+    #[repr(C)]
+    pub struct lv_draw_task_t {
+        _opaque: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct lv_draw_dsc_base_t {
+        pub obj: *mut lv_obj_t,
+        pub part: u32,
+        pub id1: u32,
+        pub id2: u32,
+        pub layer: *mut core::ffi::c_void,
+        pub dsc_size: usize,
+        pub user_data: *mut core::ffi::c_void,
+    }
+
+    #[repr(C)]
+    pub struct lv_draw_border_dsc_t {
+        pub base: lv_draw_dsc_base_t,
+        pub radius: i32,
+        pub color: lv_color_t,
+        pub width: i32,
+        pub opa: u8,
+    }
 
     /// Layout matches LVGL v9 `lv_style_t` with LV_USE_ASSERT_STYLE=0 (our lv_conf.h default).
     /// `values_and_props` is allocated/freed by lv_style_init / lv_style_reset.
@@ -81,6 +149,27 @@ mod desktop {
         pub red: u8,
     }
 
+    /// Memory monitor structure — tracks heap usage statistics.
+    /// Populated by `lv_mem_monitor()` to report allocator state.
+    ///
+    /// Layout **must** match LVGL's C `lv_mem_monitor_t` exactly
+    /// (see LVGL's `lv_mem.h`). All counters are
+    /// `size_t` in C, which maps to `usize` (8 bytes on 64-bit desktop,
+    /// 4 bytes on 32-bit embedded). A mismatched layout causes
+    /// `lv_mem_monitor()` to overflow the caller's stack buffer.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug)]
+    pub struct lv_mem_monitor_t {
+        pub total_size: usize,        // Total heap size
+        pub free_cnt: usize,          // Number of free blocks
+        pub free_size: usize,         // Size of available memory
+        pub free_biggest_size: usize, // Size of largest contiguous free block
+        pub used_cnt: usize,          // Number of used blocks
+        pub max_used: usize,          // Max heap memory used (high-water mark)
+        pub used_pct: u8,             // Percentage of heap used (0-100)
+        pub frag_pct: u8,             // Fragmentation percent (0-100)
+    }
+
     /// Opaque animation object — 256 bytes covers all known LVGL v8/v9 targets.
     ///
     /// The real `lv_anim_t` size is determined by LVGL headers (varies with version
@@ -92,8 +181,8 @@ mod desktop {
         _data: [u8; 256],
     }
 
-    /// `lv_result_t_LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
-    pub const lv_result_t_LV_RESULT_OK: u32 = 1;
+    /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
+    pub const LV_RESULT_OK: u32 = 1;
 
     unsafe extern "C" {
         pub static lv_font_montserrat_48: lv_font_t;
@@ -116,9 +205,11 @@ mod desktop {
         pub fn lv_arc_set_range(obj: *mut lv_obj_t, min: i32, max: i32);
         pub fn lv_arc_set_value(obj: *mut lv_obj_t, value: i32);
         pub fn lv_arc_get_value(obj: *mut lv_obj_t) -> i32;
-        pub fn lv_arc_set_bg_angles(obj: *mut lv_obj_t, start: u16, end: u16);
-        pub fn lv_arc_set_angles(obj: *mut lv_obj_t, start: u16, end: u16);
-        pub fn lv_arc_set_rotation(obj: *mut lv_obj_t, rotation: u16);
+        #[link_name = "lv_arc_set_bg_angles"]
+        fn lv_arc_set_bg_angles_raw(obj: *mut lv_obj_t, start: f32, end: f32);
+        #[link_name = "lv_arc_set_angles"]
+        fn lv_arc_set_angles_raw(obj: *mut lv_obj_t, start: f32, end: f32);
+        pub fn lv_arc_set_rotation(obj: *mut lv_obj_t, rotation: i32);
         pub fn lv_arc_set_mode(obj: *mut lv_obj_t, mode: u32);
         pub fn lv_arc_set_change_rate(obj: *mut lv_obj_t, rate: u32);
         pub fn lv_obj_remove_style_all(obj: *mut lv_obj_t);
@@ -155,6 +246,10 @@ mod desktop {
         pub fn lv_event_get_user_data(e: *mut lv_event_t) -> *mut core::ffi::c_void;
         pub fn lv_event_get_code(e: *mut lv_event_t) -> u32;
         pub fn lv_event_get_target(e: *mut lv_event_t) -> *mut core::ffi::c_void;
+        pub fn lv_event_get_draw_task(e: *mut lv_event_t) -> *mut lv_draw_task_t;
+        pub fn lv_draw_task_get_border_dsc(
+            task: *mut lv_draw_task_t,
+        ) -> *mut lv_draw_border_dsc_t;
 
         // State
         pub fn lv_obj_add_state(obj: *mut lv_obj_t, state: u16);
@@ -198,6 +293,8 @@ mod desktop {
         pub fn lv_obj_set_style_max_height(obj: *mut lv_obj_t, value: i32, selector: u32);
         pub fn lv_obj_set_style_translate_y(obj: *mut lv_obj_t, value: i32, selector: u32);
         pub fn lv_obj_set_style_transform_rotation(obj: *mut lv_obj_t, angle: i32, selector: u32);
+        pub fn lv_obj_set_style_transform_width(obj: *mut lv_obj_t, value: i32, selector: u32);
+        pub fn lv_obj_set_style_transform_height(obj: *mut lv_obj_t, value: i32, selector: u32);
 
         // Padding
         pub fn lv_obj_set_style_pad_row(obj: *mut lv_obj_t, value: i32, selector: u32);
@@ -343,11 +440,7 @@ mod desktop {
         pub fn lv_obj_set_style_bg_image_recolor_opa(obj: *mut lv_obj_t, value: u8, selector: u32);
 
         // Style — image
-        pub fn lv_obj_set_style_image_recolor(
-            obj: *mut lv_obj_t,
-            value: lv_color_t,
-            selector: u32,
-        );
+        pub fn lv_obj_set_style_image_recolor(obj: *mut lv_obj_t, value: lv_color_t, selector: u32);
         pub fn lv_obj_set_style_image_recolor_opa(obj: *mut lv_obj_t, value: u8, selector: u32);
 
         // QR code
@@ -377,6 +470,7 @@ mod desktop {
         pub fn lv_style_init(style: *mut lv_style_t);
         pub fn lv_style_reset(style: *mut lv_style_t);
         pub fn lv_obj_add_style(obj: *mut lv_obj_t, style: *const lv_style_t, selector: u32);
+        pub fn lv_obj_remove_style(obj: *mut lv_obj_t, style: *const lv_style_t, selector: u32);
         pub fn lv_style_set_bg_color(style: *mut lv_style_t, value: lv_color_t);
         pub fn lv_style_set_bg_opa(style: *mut lv_style_t, value: u8);
         pub fn lv_style_set_text_color(style: *mut lv_style_t, value: lv_color_t);
@@ -391,10 +485,7 @@ mod desktop {
         pub fn lv_style_set_pad_bottom(style: *mut lv_style_t, value: i32);
         pub fn lv_style_set_pad_left(style: *mut lv_style_t, value: i32);
         pub fn lv_style_set_pad_right(style: *mut lv_style_t, value: i32);
-        pub fn lv_style_set_bg_image_src(
-            style: *mut lv_style_t,
-            value: *const core::ffi::c_void,
-        );
+        pub fn lv_style_set_bg_image_src(style: *mut lv_style_t, value: *const core::ffi::c_void);
         pub fn lv_style_set_bg_image_opa(style: *mut lv_style_t, value: u8);
         pub fn lv_style_set_bg_image_tiled(style: *mut lv_style_t, value: bool);
         pub fn lv_style_set_pad_row(style: *mut lv_style_t, value: i32);
@@ -473,11 +564,26 @@ mod desktop {
             cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
             user_data: *mut core::ffi::c_void,
         ) -> i32;
+        pub fn lv_async_call_cancel(
+            cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+            user_data: *mut core::ffi::c_void,
+        ) -> u32;
         pub fn lv_obj_set_user_data(obj: *mut lv_obj_t, ud: *mut core::ffi::c_void);
         pub fn lv_obj_get_user_data(obj: *mut lv_obj_t) -> *mut core::ffi::c_void;
         pub fn lv_label_set_long_mode(label: *mut lv_obj_t, mode: u32);
         pub fn lv_label_set_recolor(label: *mut lv_obj_t, en: bool);
         pub fn lv_obj_clean(obj: *mut lv_obj_t);
+        /// Drop a single decoded image (by source path/pointer) from LVGL's
+        /// image cache *immediately*, instead of waiting for LRU eviction.
+        /// Pass `NULL` to drop every cached image. Used to release a flag's
+        /// (potentially large) decoded vector draw list the moment it scrolls
+        /// off-screen, keeping cache pressure bounded.
+        pub fn lv_image_cache_drop(src: *const core::ffi::c_void);
+        /// Returns `true` if `obj` is still present in some display's object
+        /// tree (i.e. not deleted). Only compares pointer identity against the
+        /// live tree and never dereferences `obj`, so it is safe to call with a
+        /// dangling pointer. See LVGL v9 `core/lv_obj.c`.
+        pub fn lv_obj_is_valid(obj: *const lv_obj_t) -> bool;
         pub fn lv_obj_get_child_count(obj: *mut lv_obj_t) -> u32;
         pub fn lv_obj_get_child(obj: *mut lv_obj_t, idx: i32) -> *mut lv_obj_t;
         /// Move `obj` to a specific z-order index among its siblings. Pass
@@ -489,11 +595,7 @@ mod desktop {
             cb: Option<unsafe extern "C" fn(*mut lv_event_t)>,
             user_data: *mut core::ffi::c_void,
         );
-        pub fn lv_obj_remove_local_style_prop(
-            obj: *mut lv_obj_t,
-            prop: u8,
-            selector: u32,
-        ) -> bool;
+        pub fn lv_obj_remove_local_style_prop(obj: *mut lv_obj_t, prop: u8, selector: u32) -> bool;
         pub fn lv_group_focus_obj(obj: *mut lv_obj_t);
 
         // ---- Input devices ----
@@ -504,38 +606,45 @@ mod desktop {
         /// pointer/finger. Used to "swallow" the rest of a long-press so it
         /// can't generate further LV_EVENT_VALUE_CHANGED auto-repeats.
         pub fn lv_indev_wait_release(indev: *mut lv_indev_t);
+
+        // ---- Memory diagnostics ----
+        /// Collect memory pool statistics into `mon_p`.
+        /// Reports total size, free bytes, fragmentation, allocation counts.
+        pub fn lv_mem_monitor(mon_p: *mut lv_mem_monitor_t);
+        /// Validate heap integrity. Returns `LV_RESULT_OK` (1) if the pool
+        /// is uncorrupted. The C return type is `lv_result_t` (modeled here as `u32`).
+        pub fn lv_mem_test() -> u32;
+    }
+
+    /// Desktop sim links the vendored 9.6-dev LVGL with `LV_USE_FLOAT=1`, so
+    /// `lv_value_precise_t` is `float` for arc angles. The DSL keeps integer
+    /// degrees to match the LVGL 9.3 production device configuration.
+    pub unsafe fn lv_arc_set_bg_angles(obj: *mut lv_obj_t, start: i32, end: i32) {
+        unsafe {
+            lv_arc_set_bg_angles_raw(
+                obj,
+                super::arc_angle_to_desktop_precise(start),
+                super::arc_angle_to_desktop_precise(end),
+            );
+        }
+    }
+
+    /// See [`lv_arc_set_bg_angles`] for the desktop `lv_value_precise_t` ABI note.
+    pub unsafe fn lv_arc_set_angles(obj: *mut lv_obj_t, start: i32, end: i32) {
+        unsafe {
+            lv_arc_set_angles_raw(
+                obj,
+                super::arc_angle_to_desktop_precise(start),
+                super::arc_angle_to_desktop_precise(end),
+            );
+        }
     }
 
     // ---------------------------------------------------------
-    // LVGL v9 enum constants used by Phase-1 SearchBar code.
-    // Defined here so the desktop_sim build resolves them; the
-    // mock layer (cfg(test)/cfg(no_zephyr) without desktop_sim)
-    // defines its own copies further below.
+    // LVGL v9 enum constants — single shared source, see
+    // `lv_shared_consts` above.
     // ---------------------------------------------------------
-    pub const LV_FLEX_FLOW_ROW: u32 = 0x00;
-    pub const LV_FLEX_FLOW_COLUMN: u32 = 0x01;
-
-    pub const LV_LABEL_LONG_WRAP: u32 = 0;
-    pub const LV_LABEL_LONG_DOT: u32 = 1;
-    pub const LV_LABEL_LONG_SCROLL: u32 = 2;
-    pub const LV_LABEL_LONG_SCROLL_CIRC: u32 = 3;
-    pub const LV_LABEL_LONG_CLIP: u32 = 4;
-
-    pub const LV_EVENT_CLICKED: u32 = 10;
-    pub const LV_EVENT_SCROLL_END: u32 = 31;
-    pub const LV_EVENT_VALUE_CHANGED: u32 = 35;
-    pub const LV_EVENT_DELETE: u32 = 41;
-
-    pub const LV_ANIM_REPEAT_INFINITE: u32 = 0xFFFF_FFFF;
-
-    pub const LV_PART_MAIN:       u32 = 0x000000;
-    pub const LV_PART_SCROLLBAR:  u32 = 0x010000;
-    pub const LV_PART_INDICATOR:  u32 = 0x020000;
-    pub const LV_PART_KNOB:       u32 = 0x030000;
-
-    pub const LV_ARC_MODE_NORMAL:      u32 = 0;
-    pub const LV_ARC_MODE_SYMMETRICAL: u32 = 1;
-    pub const LV_ARC_MODE_REVERSE:     u32 = 2;
+    pub use super::lv_shared_consts::*;
 }
 
 #[cfg(all(no_zephyr, desktop_sim, not(test)))]
@@ -550,7 +659,7 @@ pub use desktop::*;
 #[cfg(any(test, all(no_zephyr, not(desktop_sim))))]
 mod mock {
     use std::cell::{Cell, RefCell};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::CStr;
 
     // ---------------------------------------------------------
@@ -565,6 +674,25 @@ mod mock {
     pub struct lv_display_t;
     pub struct lv_theme_t;
     pub struct lv_indev_t;
+    pub struct lv_draw_task_t;
+    #[repr(C)]
+    pub struct lv_draw_dsc_base_t {
+        pub obj: *mut lv_obj_t,
+        pub part: u32,
+        pub id1: u32,
+        pub id2: u32,
+        pub layer: *mut core::ffi::c_void,
+        pub dsc_size: usize,
+        pub user_data: *mut core::ffi::c_void,
+    }
+    #[repr(C)]
+    pub struct lv_draw_border_dsc_t {
+        pub base: lv_draw_dsc_base_t,
+        pub radius: i32,
+        pub color: lv_color_t,
+        pub width: i32,
+        pub opa: u8,
+    }
     /// Fixed-size placeholder — layout doesn't matter for the mock (all ops are no-ops).
     pub struct lv_style_t {
         pub(crate) _pad: [u8; 16],
@@ -597,6 +725,21 @@ mod mock {
         pub red: u8,
     }
 
+    /// Memory monitor structure (mock impl). Layout mirrors the desktop /
+    /// production `lv_mem_monitor_t` so callers behave identically.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug)]
+    pub struct lv_mem_monitor_t {
+        pub total_size: usize,
+        pub free_cnt: usize,
+        pub free_size: usize,
+        pub free_biggest_size: usize,
+        pub used_cnt: usize,
+        pub max_used: usize,
+        pub used_pct: u8,
+        pub frag_pct: u8,
+    }
+
     /// Mock animation struct — same size as the desktop version so that
     /// `MaybeUninit::<lv_anim_t>::uninit()` compiles identically under test.
     #[repr(C, align(8))]
@@ -605,29 +748,10 @@ mod mock {
     }
 
     // ---------------------------------------------------------
-    // LVGL v9.2 constants (flex layout)
+    // LVGL v9 enum constants — single shared source, see
+    // `lv_shared_consts` above.
     // ---------------------------------------------------------
-    pub const LV_FLEX_FLOW_ROW: u32 = 0x00;
-    pub const LV_FLEX_FLOW_COLUMN: u32 = 0x01;
-    pub const LV_LABEL_LONG_WRAP: u32 = 0;
-    pub const LV_LABEL_LONG_DOT: u32 = 1;
-    pub const LV_LABEL_LONG_SCROLL: u32 = 2;
-    pub const LV_LABEL_LONG_SCROLL_CIRC: u32 = 3;
-    pub const LV_LABEL_LONG_CLIP: u32 = 4;
-    pub const LV_EVENT_CLICKED: u32 = 10;
-    pub const LV_EVENT_SCROLL_END: u32 = 31;
-    pub const LV_EVENT_VALUE_CHANGED: u32 = 35;
-    pub const LV_EVENT_DELETE: u32 = 41;
-    pub const LV_ANIM_REPEAT_INFINITE: u32 = 0xFFFF_FFFF;
-
-    pub const LV_PART_MAIN:       u32 = 0x000000;
-    pub const LV_PART_SCROLLBAR:  u32 = 0x010000;
-    pub const LV_PART_INDICATOR:  u32 = 0x020000;
-    pub const LV_PART_KNOB:       u32 = 0x030000;
-
-    pub const LV_ARC_MODE_NORMAL:      u32 = 0;
-    pub const LV_ARC_MODE_SYMMETRICAL: u32 = 1;
-    pub const LV_ARC_MODE_REVERSE:     u32 = 2;
+    pub use super::lv_shared_consts::*;
 
     // Static font symbols used by Font::montserrat_*().
     pub static lv_font_montserrat_48: lv_font_t = lv_font_t;
@@ -908,6 +1032,9 @@ mod mock {
         AsyncCall {
             user_data: usize,
         },
+        AsyncCallCancel {
+            user_data: usize,
+        },
         ObjSetFlexFlow {
             obj: usize,
             flow: u32,
@@ -1173,31 +1300,109 @@ mod mock {
             count: i32,
         },
         AnimInit,
-        AnimSetVar { var: usize },
-        AnimSetExecCb { cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)> },
-        AnimSetValues { start: i32, end: i32 },
-        AnimSetDuration { ms: u32 },
-        AnimSetPathCb { cb: Option<unsafe extern "C" fn(*const lv_anim_t) -> i32> },
-        AnimSetCompletedCb { cb: Option<unsafe extern "C" fn(*mut lv_anim_t)> },
+        AnimSetVar {
+            var: usize,
+        },
+        AnimSetExecCb {
+            cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)>,
+        },
+        AnimSetValues {
+            start: i32,
+            end: i32,
+        },
+        AnimSetDuration {
+            ms: u32,
+        },
+        AnimSetPathCb {
+            cb: Option<unsafe extern "C" fn(*const lv_anim_t) -> i32>,
+        },
+        AnimSetCompletedCb {
+            cb: Option<unsafe extern "C" fn(*mut lv_anim_t)>,
+        },
         AnimStart,
-        AnimDelete { var: usize, cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)> },
+        AnimDelete {
+            var: usize,
+            cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)>,
+        },
         AnimSetRepeatCount {
             count: u32,
         },
-        ArcCreate { obj: usize, parent: usize },
-        ArcSetRange { obj: usize, min: i32, max: i32 },
-        ArcSetValue { obj: usize, value: i32 },
-        ArcSetBgAngles { obj: usize, start: u16, end: u16 },
-        ArcSetAngles { obj: usize, start: u16, end: u16 },
-        ArcSetRotation { obj: usize, rotation: u16 },
-        ArcSetMode { obj: usize, mode: u32 },
-        ArcSetChangeRate { obj: usize, rate: u32 },
-        ObjRemoveStyleAll { obj: usize },
-        StyleArcColor { obj: usize, color: lv_color_t, selector: u32 },
-        StyleArcWidth { obj: usize, width: i32, selector: u32 },
-        StyleArcOpa { obj: usize, opa: u8, selector: u32 },
-        StyleArcRounded { obj: usize, rounded: bool, selector: u32 },
-        RemoveLocalStyleProp { obj: usize, prop: u8, selector: u32 },
+        ArcCreate {
+            obj: usize,
+            parent: usize,
+        },
+        ArcSetRange {
+            obj: usize,
+            min: i32,
+            max: i32,
+        },
+        ArcSetValue {
+            obj: usize,
+            value: i32,
+        },
+        ArcSetBgAngles {
+            obj: usize,
+            start: i32,
+            end: i32,
+        },
+        ArcSetAngles {
+            obj: usize,
+            start: i32,
+            end: i32,
+        },
+        ArcSetRotation {
+            obj: usize,
+            rotation: i32,
+        },
+        ArcSetMode {
+            obj: usize,
+            mode: u32,
+        },
+        ArcSetChangeRate {
+            obj: usize,
+            rate: u32,
+        },
+        ObjRemoveStyleAll {
+            obj: usize,
+        },
+        ObjAddStyle {
+            obj: usize,
+            style: usize,
+            selector: u32,
+        },
+        ObjRemoveStyle {
+            obj: usize,
+            style: usize,
+            selector: u32,
+        },
+        StyleReset {
+            style: usize,
+        },
+        StyleArcColor {
+            obj: usize,
+            color: lv_color_t,
+            selector: u32,
+        },
+        StyleArcWidth {
+            obj: usize,
+            width: i32,
+            selector: u32,
+        },
+        StyleArcOpa {
+            obj: usize,
+            opa: u8,
+            selector: u32,
+        },
+        StyleArcRounded {
+            obj: usize,
+            rounded: bool,
+            selector: u32,
+        },
+        RemoveLocalStyleProp {
+            obj: usize,
+            prop: u8,
+            selector: u32,
+        },
     }
 
     thread_local! {
@@ -1214,6 +1419,8 @@ mod mock {
         // Pending x value buffered between lv_image_set_offset_x and lv_image_set_offset_y
         static PENDING_OFFSET_X:  Cell<(usize, i32)>           = const { Cell::new((0, 0)) };
         static ARC_VALUE: RefCell<HashMap<usize, i32>> = RefCell::new(HashMap::new());
+        // Objects passed to lv_obj_delete; lets lv_obj_is_valid report them as invalid.
+        static DELETED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     }
 
     /// Drain and return all recorded calls since the last reset/drain.
@@ -1235,6 +1442,7 @@ mod mock {
         ARC_VALUE.with(|m| m.borrow_mut().clear());
         CHILDREN.with(|m| m.borrow_mut().clear());
         EVENT_REG.with(|m| m.borrow_mut().clear());
+        DELETED.with(|m| m.borrow_mut().clear());
         SPY.with(|s| s.borrow_mut().clear());
     }
 
@@ -1465,51 +1673,123 @@ mod mock {
     pub unsafe fn lv_arc_create(parent: *mut lv_obj_t) -> *mut lv_obj_t {
         let obj = alloc_fake_obj();
         register_child(parent, obj);
-        ARC_VALUE.with(|m| { m.borrow_mut().insert(obj as usize, 0); });
+        ARC_VALUE.with(|m| {
+            m.borrow_mut().insert(obj as usize, 0);
+        });
         SPY.with(|s| {
-            s.borrow_mut().push(LvCall::ArcCreate { obj: obj as usize, parent: parent as usize })
+            s.borrow_mut().push(LvCall::ArcCreate {
+                obj: obj as usize,
+                parent: parent as usize,
+            })
         });
         obj
     }
     pub unsafe fn lv_arc_set_range(obj: *mut lv_obj_t, min: i32, max: i32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetRange { obj: obj as usize, min, max }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetRange {
+                obj: obj as usize,
+                min,
+                max,
+            })
+        });
     }
     pub unsafe fn lv_arc_set_value(obj: *mut lv_obj_t, value: i32) {
-        ARC_VALUE.with(|m| { m.borrow_mut().insert(obj as usize, value); });
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetValue { obj: obj as usize, value }));
+        ARC_VALUE.with(|m| {
+            m.borrow_mut().insert(obj as usize, value);
+        });
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetValue {
+                obj: obj as usize,
+                value,
+            })
+        });
     }
     pub unsafe fn lv_arc_get_value(obj: *mut lv_obj_t) -> i32 {
         ARC_VALUE.with(|m| m.borrow().get(&(obj as usize)).copied().unwrap_or(0))
     }
-    pub unsafe fn lv_arc_set_bg_angles(obj: *mut lv_obj_t, start: u16, end: u16) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetBgAngles { obj: obj as usize, start, end }));
+    pub unsafe fn lv_arc_set_bg_angles(obj: *mut lv_obj_t, start: i32, end: i32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetBgAngles {
+                obj: obj as usize,
+                start,
+                end,
+            })
+        });
     }
-    pub unsafe fn lv_arc_set_angles(obj: *mut lv_obj_t, start: u16, end: u16) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetAngles { obj: obj as usize, start, end }));
+    pub unsafe fn lv_arc_set_angles(obj: *mut lv_obj_t, start: i32, end: i32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetAngles {
+                obj: obj as usize,
+                start,
+                end,
+            })
+        });
     }
-    pub unsafe fn lv_arc_set_rotation(obj: *mut lv_obj_t, rotation: u16) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetRotation { obj: obj as usize, rotation }));
+    pub unsafe fn lv_arc_set_rotation(obj: *mut lv_obj_t, rotation: i32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetRotation {
+                obj: obj as usize,
+                rotation,
+            })
+        });
     }
     pub unsafe fn lv_arc_set_mode(obj: *mut lv_obj_t, mode: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetMode { obj: obj as usize, mode }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetMode {
+                obj: obj as usize,
+                mode,
+            })
+        });
     }
     pub unsafe fn lv_arc_set_change_rate(obj: *mut lv_obj_t, rate: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ArcSetChangeRate { obj: obj as usize, rate }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ArcSetChangeRate {
+                obj: obj as usize,
+                rate,
+            })
+        });
     }
     pub unsafe fn lv_obj_remove_style_all(obj: *mut lv_obj_t) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::ObjRemoveStyleAll { obj: obj as usize }));
+        SPY.with(|s| {
+            s.borrow_mut()
+                .push(LvCall::ObjRemoveStyleAll { obj: obj as usize })
+        });
     }
     pub unsafe fn lv_obj_set_style_arc_color(obj: *mut lv_obj_t, color: lv_color_t, selector: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::StyleArcColor { obj: obj as usize, color, selector }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::StyleArcColor {
+                obj: obj as usize,
+                color,
+                selector,
+            })
+        });
     }
     pub unsafe fn lv_obj_set_style_arc_width(obj: *mut lv_obj_t, width: i32, selector: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::StyleArcWidth { obj: obj as usize, width, selector }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::StyleArcWidth {
+                obj: obj as usize,
+                width,
+                selector,
+            })
+        });
     }
     pub unsafe fn lv_obj_set_style_arc_opa(obj: *mut lv_obj_t, opa: u8, selector: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::StyleArcOpa { obj: obj as usize, opa, selector }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::StyleArcOpa {
+                obj: obj as usize,
+                opa,
+                selector,
+            })
+        });
     }
     pub unsafe fn lv_obj_set_style_arc_rounded(obj: *mut lv_obj_t, rounded: bool, selector: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::StyleArcRounded { obj: obj as usize, rounded, selector }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::StyleArcRounded {
+                obj: obj as usize,
+                rounded,
+                selector,
+            })
+        });
     }
     pub unsafe fn lv_screen_active() -> *mut lv_obj_t {
         alloc_fake_obj()
@@ -1797,6 +2077,8 @@ mod mock {
             })
         });
     }
+    pub unsafe fn lv_obj_set_style_transform_width(_: *mut lv_obj_t, _: i32, _: u32) {}
+    pub unsafe fn lv_obj_set_style_transform_height(_: *mut lv_obj_t, _: i32, _: u32) {}
 
     // ---------------------------------------------------------
     // Padding (no-ops)
@@ -2196,8 +2478,8 @@ mod mock {
     // ---------------------------------------------------------
     // QR code
     // ---------------------------------------------------------
-    /// `lv_result_t_LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
-    pub const lv_result_t_LV_RESULT_OK: u32 = 1;
+    /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
+    pub const LV_RESULT_OK: u32 = 1;
 
     pub unsafe fn lv_qrcode_create(parent: *mut lv_obj_t) -> *mut lv_obj_t {
         let obj = alloc_fake_obj();
@@ -2243,7 +2525,7 @@ mod mock {
                 data_len,
             })
         });
-        lv_result_t_LV_RESULT_OK
+        LV_RESULT_OK
     }
 
     // ---------------------------------------------------------
@@ -2613,7 +2895,7 @@ mod mock {
         _event: u32,
         _param: *mut core::ffi::c_void,
     ) -> u32 {
-        lv_result_t_LV_RESULT_OK
+        LV_RESULT_OK
     }
     pub unsafe fn lv_obj_remove_event_cb(
         obj: *mut lv_obj_t,
@@ -2664,15 +2946,40 @@ mod mock {
         EVENT_REG.with(|m| {
             m.borrow_mut().remove(&(obj as usize));
         });
+        DELETED.with(|m| {
+            m.borrow_mut().insert(obj as usize);
+        });
         SPY.with(|s| s.borrow_mut().push(LvCall::ObjDelete { obj: obj as usize }));
     }
 
     // ---------------------------------------------------------
-    // Style objects (all no-ops in mock)
+    // Style objects (mock stubs; selected calls are recorded for assertions)
     // ---------------------------------------------------------
     pub unsafe fn lv_style_init(_style: *mut lv_style_t) {}
-    pub unsafe fn lv_style_reset(_style: *mut lv_style_t) {}
-    pub unsafe fn lv_obj_add_style(_obj: *mut lv_obj_t, _style: *const lv_style_t, _selector: u32) {
+    pub unsafe fn lv_style_reset(style: *mut lv_style_t) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::StyleReset {
+                style: style as usize,
+            })
+        });
+    }
+    pub unsafe fn lv_obj_add_style(obj: *mut lv_obj_t, style: *const lv_style_t, selector: u32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ObjAddStyle {
+                obj: obj as usize,
+                style: style as usize,
+                selector,
+            })
+        });
+    }
+    pub unsafe fn lv_obj_remove_style(obj: *mut lv_obj_t, style: *const lv_style_t, selector: u32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::ObjRemoveStyle {
+                obj: obj as usize,
+                style: style as usize,
+                selector,
+            })
+        });
     }
     pub unsafe fn lv_style_set_bg_color(_style: *mut lv_style_t, _value: lv_color_t) {}
     pub unsafe fn lv_style_set_bg_opa(_style: *mut lv_style_t, _value: u8) {}
@@ -2779,6 +3086,14 @@ mod mock {
     pub unsafe fn lv_event_get_target(_e: *mut lv_event_t) -> *mut core::ffi::c_void {
         CURRENT_EVENT.with(|c| c.get().0) as *mut core::ffi::c_void
     }
+    pub unsafe fn lv_event_get_draw_task(_e: *mut lv_event_t) -> *mut lv_draw_task_t {
+        core::ptr::null_mut()
+    }
+    pub unsafe fn lv_draw_task_get_border_dsc(
+        _task: *mut lv_draw_task_t,
+    ) -> *mut lv_draw_border_dsc_t {
+        core::ptr::null_mut()
+    }
 
     // ---------------------------------------------------------
     // Y-coordinate helpers (used by slide animations)
@@ -2796,11 +3111,16 @@ mod mock {
         // Match LVGL's zero-initialized semantics: any previous user_data
         // tracked out-of-band for this same pointer (e.g. when a stack slot
         // gets reused for a new animation) must not leak into the new anim.
-        ANIM_USER_DATA.with(|m| { m.borrow_mut().remove(&(a as usize)); });
+        ANIM_USER_DATA.with(|m| {
+            m.borrow_mut().remove(&(a as usize));
+        });
         SPY.with(|s| s.borrow_mut().push(LvCall::AnimInit));
     }
     pub unsafe fn lv_anim_set_var(_a: *mut lv_anim_t, var: *mut core::ffi::c_void) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::AnimSetVar { var: var as usize }));
+        SPY.with(|s| {
+            s.borrow_mut()
+                .push(LvCall::AnimSetVar { var: var as usize })
+        });
     }
     pub unsafe fn lv_anim_set_exec_cb(
         _a: *mut lv_anim_t,
@@ -2812,7 +3132,10 @@ mod mock {
         SPY.with(|s| s.borrow_mut().push(LvCall::AnimSetValues { start, end }));
     }
     pub unsafe fn lv_anim_set_duration(_a: *mut lv_anim_t, duration: u32) {
-        SPY.with(|s| s.borrow_mut().push(LvCall::AnimSetDuration { ms: duration }));
+        SPY.with(|s| {
+            s.borrow_mut()
+                .push(LvCall::AnimSetDuration { ms: duration })
+        });
     }
     pub unsafe fn lv_anim_set_path_cb(
         _a: *mut lv_anim_t,
@@ -2837,7 +3160,12 @@ mod mock {
         var: *mut core::ffi::c_void,
         exec_cb: Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)>,
     ) -> u32 {
-        SPY.with(|s| s.borrow_mut().push(LvCall::AnimDelete { var: var as usize, cb: exec_cb }));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::AnimDelete {
+                var: var as usize,
+                cb: exec_cb,
+            })
+        });
         0
     }
     pub unsafe extern "C" fn lv_anim_path_ease_in(_a: *const lv_anim_t) -> i32 {
@@ -2846,11 +3174,21 @@ mod mock {
     pub unsafe extern "C" fn lv_anim_path_ease_out(_a: *const lv_anim_t) -> i32 {
         0
     }
-    pub unsafe extern "C" fn lv_anim_path_linear(_a: *const lv_anim_t) -> i32 { 0 }
-    pub unsafe extern "C" fn lv_anim_path_ease_in_out(_a: *const lv_anim_t) -> i32 { 0 }
-    pub unsafe extern "C" fn lv_anim_path_overshoot(_a: *const lv_anim_t) -> i32 { 0 }
-    pub unsafe extern "C" fn lv_anim_path_bounce(_a: *const lv_anim_t) -> i32 { 0 }
-    pub unsafe extern "C" fn lv_anim_path_step(_a: *const lv_anim_t) -> i32 { 0 }
+    pub unsafe extern "C" fn lv_anim_path_linear(_a: *const lv_anim_t) -> i32 {
+        0
+    }
+    pub unsafe extern "C" fn lv_anim_path_ease_in_out(_a: *const lv_anim_t) -> i32 {
+        0
+    }
+    pub unsafe extern "C" fn lv_anim_path_overshoot(_a: *const lv_anim_t) -> i32 {
+        0
+    }
+    pub unsafe extern "C" fn lv_anim_path_bounce(_a: *const lv_anim_t) -> i32 {
+        0
+    }
+    pub unsafe extern "C" fn lv_anim_path_step(_a: *const lv_anim_t) -> i32 {
+        0
+    }
     // Per-anim user_data, keyed by the `lv_anim_t` pointer cast to usize, so
     // multiple animations don't clobber each other's `user_data` value.
     thread_local! {
@@ -2859,11 +3197,16 @@ mod mock {
         > = core::cell::RefCell::new(std::collections::HashMap::new());
     }
     pub unsafe fn lv_anim_set_user_data(a: *mut lv_anim_t, user_data: *mut core::ffi::c_void) {
-        ANIM_USER_DATA.with(|m| { m.borrow_mut().insert(a as usize, user_data); });
+        ANIM_USER_DATA.with(|m| {
+            m.borrow_mut().insert(a as usize, user_data);
+        });
     }
     pub unsafe fn lv_anim_get_user_data(a: *const lv_anim_t) -> *mut core::ffi::c_void {
         ANIM_USER_DATA.with(|m| {
-            m.borrow().get(&(a as usize)).copied().unwrap_or(core::ptr::null_mut())
+            m.borrow()
+                .get(&(a as usize))
+                .copied()
+                .unwrap_or(core::ptr::null_mut())
         })
     }
 
@@ -3032,6 +3375,17 @@ mod mock {
         }
         0
     }
+    pub unsafe fn lv_async_call_cancel(
+        _cb: Option<unsafe extern "C" fn(*mut c_void)>,
+        user_data: *mut c_void,
+    ) -> u32 {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::AsyncCallCancel {
+                user_data: user_data as usize,
+            })
+        });
+        0
+    }
 
     // -------- User data --------
     pub unsafe fn lv_obj_set_user_data(obj: *mut lv_obj_t, ud: *mut c_void) {
@@ -3076,9 +3430,24 @@ mod mock {
 
     pub unsafe fn lv_obj_clean(obj: *mut lv_obj_t) {
         SPY.with(|s| s.borrow_mut().push(LvCall::ObjClean { obj: obj as usize }));
-        // Tests don't rely on actual child removal; the label create count
-        // in the spy is what matters.
+        let children_to_delete =
+            CHILDREN.with(|m| m.borrow().get(&(obj as usize)).cloned().unwrap_or_default());
+        for child in children_to_delete {
+            unsafe {
+                lv_obj_delete(child as *mut lv_obj_t);
+            }
+        }
     }
+
+    pub unsafe fn lv_image_cache_drop(_src: *const core::ffi::c_void) {
+        // No image cache in the host test environment; nothing to drop.
+    }
+
+    pub unsafe fn lv_obj_is_valid(obj: *const lv_obj_t) -> bool {
+        // Mirrors the real LVGL semantics closely enough for tests: an object
+        // is valid until it has been passed to `lv_obj_delete`. Matches the
+        // real function in never dereferencing `obj`.
+        !DELETED.with(|m| m.borrow().contains(&(obj as usize)))    }
 
     // -------- Children & focus --------
     pub unsafe fn lv_obj_get_child_count(obj: *mut lv_obj_t) -> u32 {
@@ -3164,8 +3533,9 @@ mod mock {
 
     pub unsafe fn lv_indev_wait_release(indev: *mut lv_indev_t) {
         SPY.with(|s| {
-            s.borrow_mut()
-                .push(LvCall::IndevWaitRelease { indev: indev as usize })
+            s.borrow_mut().push(LvCall::IndevWaitRelease {
+                indev: indev as usize,
+            })
         });
     }
 
@@ -3176,6 +3546,28 @@ mod mock {
                 index,
             })
         });
+    }
+
+    /// Mock implementation: collect pseudo-heap statistics.
+    /// In mock, we just return zeros since there's no real LVGL heap.
+    pub unsafe fn lv_mem_monitor(mon_p: *mut lv_mem_monitor_t) {
+        if !mon_p.is_null() {
+            (*mon_p) = lv_mem_monitor_t {
+                total_size: 0,
+                free_cnt: 0,
+                free_size: 0,
+                free_biggest_size: 0,
+                used_cnt: 0,
+                max_used: 0,
+                used_pct: 0,
+                frag_pct: 0,
+            };
+        }
+    }
+
+    /// Mock implementation: always reports heap is valid.
+    pub unsafe fn lv_mem_test() -> u32 {
+        LV_RESULT_OK
     }
 }
 
@@ -3188,6 +3580,14 @@ pub use mock::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_arc_angle_wrapper_converts_i32_to_float_precise_arg() {
+        // screen-sdl/lv_conf.h:64 sets LV_USE_FLOAT=1 for the vendored 9.6-dev desktop sim,
+        // so desktop arc angle externs receive lv_value_precise_t as float even though the DSL API is i32.
+        assert_eq!(super::arc_angle_to_desktop_precise(-45), -45.0);
+        assert_eq!(super::arc_angle_to_desktop_precise(405), 405.0);
+    }
 
     #[test]
     fn task1_new_symbols_referenced() {
@@ -3212,6 +3612,11 @@ mod tests {
                 Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
                 *mut core::ffi::c_void,
             ) -> i32;
+        let _ = lv_async_call_cancel
+            as unsafe fn(
+                Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+                *mut core::ffi::c_void,
+            ) -> u32;
         let _ = lv_obj_set_user_data as unsafe fn(*mut lv_obj_t, *mut core::ffi::c_void);
         let _ = lv_obj_get_user_data as unsafe fn(*mut lv_obj_t) -> *mut core::ffi::c_void;
         let _ = lv_label_set_long_mode as unsafe fn(*mut lv_obj_t, u32);
@@ -3236,22 +3641,25 @@ mod tests {
         let _ = lv_obj_get_child as unsafe fn(*mut lv_obj_t, i32) -> *mut lv_obj_t;
         let _ = lv_obj_set_style_transform_rotation as unsafe fn(*mut lv_obj_t, i32, u32);
         let _ = lv_anim_set_repeat_count as unsafe fn(*mut lv_anim_t, u32);
-        let _ = lv_anim_delete as unsafe fn(
-            *mut core::ffi::c_void,
-            Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)>,
-        ) -> u32;
+        let _ = lv_anim_delete
+            as unsafe fn(
+                *mut core::ffi::c_void,
+                Option<unsafe extern "C" fn(*mut core::ffi::c_void, i32)>,
+            ) -> u32;
         let _ = lv_obj_delete as unsafe fn(*mut lv_obj_t);
         let _ = LV_ANIM_REPEAT_INFINITE;
         let _ = lv_arc_create as unsafe fn(*mut lv_obj_t) -> *mut lv_obj_t;
         let _ = lv_arc_set_range as unsafe fn(*mut lv_obj_t, i32, i32);
         let _ = lv_arc_set_value as unsafe fn(*mut lv_obj_t, i32);
         let _ = lv_arc_get_value as unsafe fn(*mut lv_obj_t) -> i32;
-        let _ = lv_arc_set_bg_angles as unsafe fn(*mut lv_obj_t, u16, u16);
-        let _ = lv_arc_set_angles as unsafe fn(*mut lv_obj_t, u16, u16);
-        let _ = lv_arc_set_rotation as unsafe fn(*mut lv_obj_t, u16);
+        // LVGL v9.3.0 src/widgets/arc/lv_arc.h:76,98,105 and src/misc/lv_types.h:88-92.
+        let _ = lv_arc_set_bg_angles as unsafe fn(*mut lv_obj_t, i32, i32);
+        let _ = lv_arc_set_angles as unsafe fn(*mut lv_obj_t, i32, i32);
+        let _ = lv_arc_set_rotation as unsafe fn(*mut lv_obj_t, i32);
         let _ = lv_arc_set_mode as unsafe fn(*mut lv_obj_t, u32);
         let _ = lv_arc_set_change_rate as unsafe fn(*mut lv_obj_t, u32);
         let _ = lv_obj_remove_style_all as unsafe fn(*mut lv_obj_t);
+        let _ = lv_obj_remove_style as unsafe fn(*mut lv_obj_t, *const lv_style_t, u32);
         let _ = lv_obj_set_style_arc_color as unsafe fn(*mut lv_obj_t, lv_color_t, u32);
         let _ = lv_obj_set_style_arc_width as unsafe fn(*mut lv_obj_t, i32, u32);
         let _ = lv_obj_set_style_arc_opa as unsafe fn(*mut lv_obj_t, u8, u32);
@@ -3702,7 +4110,10 @@ mod tests {
         assert!(matches!(calls[0], LvCall::AnimInit));
         assert!(matches!(calls[1], LvCall::AnimSetVar { var } if var == 0xABCD));
         assert!(matches!(calls[2], LvCall::AnimSetExecCb { cb: None }));
-        assert!(matches!(calls[3], LvCall::AnimSetValues { start: 0, end: 100 }));
+        assert!(matches!(
+            calls[3],
+            LvCall::AnimSetValues { start: 0, end: 100 }
+        ));
         assert!(matches!(calls[4], LvCall::AnimSetDuration { ms: 500 }));
         assert!(matches!(calls[5], LvCall::AnimSetPathCb { cb: Some(_) }));
         assert!(matches!(calls[6], LvCall::AnimSetCompletedCb { cb: None }));

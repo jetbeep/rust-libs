@@ -38,26 +38,50 @@ impl Event {
     }
 }
 
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LvEventCode {
-    All = 0,
-    Pressed = 1,
-    ShortClicked = 4,
-    LongPressed = 8,
-    Clicked = 10,
-    Released = 11,
-    Focused = 19,
-    Defocused = 20,
-    ValueChanged = 35,
-    Ready = 36,
-    Cancel = 37,
-    ScreenLoadStart = 46,
-    ScreenLoaded = 47,
-    ScreenUnloaded = 48,
+    All,
+    Pressed,
+    ShortClicked,
+    LongPressed,
+    Clicked,
+    Released,
+    Focused,
+    Defocused,
+    DrawTaskAdded,
+    ValueChanged,
+    Ready,
+    Cancel,
+    ScreenLoadStart,
+    ScreenLoaded,
+    ScreenUnloaded,
+    Unknown(u32),
 }
 
 impl LvEventCode {
+    pub const fn as_u32(self) -> u32 {
+        match self {
+            Self::All => 0,
+            Self::Pressed => 1,
+            Self::ShortClicked => 4,
+            Self::LongPressed => 8,
+            Self::Clicked => 10,
+            Self::Released => 11,
+            Self::Focused => 19,
+            Self::Defocused => 20,
+            Self::DrawTaskAdded => 34,
+            Self::ValueChanged => 35,
+            // LVGL v9.3.0 src/misc/lv_event.h:79-80. Desktop sim is currently
+            // 9.6-dev; these values intentionally follow the 9.3 device pin.
+            Self::Ready => 38,
+            Self::Cancel => 39,
+            Self::ScreenLoadStart => 46,
+            Self::ScreenLoaded => 47,
+            Self::ScreenUnloaded => 48,
+            Self::Unknown(v) => v,
+        }
+    }
+
     fn from_u32(v: u32) -> Self {
         match v {
             0 => Self::All,
@@ -68,13 +92,14 @@ impl LvEventCode {
             11 => Self::Released,
             19 => Self::Focused,
             20 => Self::Defocused,
+            34 => Self::DrawTaskAdded,
             35 => Self::ValueChanged,
-            36 => Self::Ready,
-            37 => Self::Cancel,
+            38 => Self::Ready,
+            39 => Self::Cancel,
             46 => Self::ScreenLoadStart,
             47 => Self::ScreenLoaded,
             48 => Self::ScreenUnloaded,
-            _ => Self::All,
+            _ => Self::Unknown(v),
         }
     }
 }
@@ -84,19 +109,47 @@ mod tests {
     use super::LvEventCode;
 
     #[test]
-    fn all_is_zero() {
-        assert_eq!(LvEventCode::All as u32, 0);
+    fn event_codes_match_lvgl_9_3_header_values() {
+        // LVGL v9.3.0 src/misc/lv_event.h:35-48,56-57,76,79-91.
+        assert_eq!(LvEventCode::All.as_u32(), 0);
+        assert_eq!(LvEventCode::Pressed.as_u32(), 1);
+        assert_eq!(LvEventCode::ShortClicked.as_u32(), 4);
+        assert_eq!(LvEventCode::LongPressed.as_u32(), 8);
+        assert_eq!(LvEventCode::Clicked.as_u32(), 10);
+        assert_eq!(LvEventCode::Released.as_u32(), 11);
+        assert_eq!(LvEventCode::Focused.as_u32(), 19);
+        assert_eq!(LvEventCode::Defocused.as_u32(), 20);
+        assert_eq!(LvEventCode::DrawTaskAdded.as_u32(), 34);
+        assert_eq!(LvEventCode::ValueChanged.as_u32(), 35);
+        assert_eq!(LvEventCode::Ready.as_u32(), 38);
+        assert_eq!(LvEventCode::Cancel.as_u32(), 39);
+        assert_eq!(LvEventCode::ScreenLoadStart.as_u32(), 46);
+        assert_eq!(LvEventCode::ScreenLoaded.as_u32(), 47);
+        assert_eq!(LvEventCode::ScreenUnloaded.as_u32(), 48);
     }
+
     #[test]
-    fn clicked_is_ten() {
-        assert_eq!(LvEventCode::Clicked as u32, 10);
+    fn ready_and_cancel_parse_from_lvgl_9_3_values() {
+        // LVGL v9.3.0 src/misc/lv_event.h:79-80.
+        assert_eq!(LvEventCode::from_u32(38), LvEventCode::Ready);
+        assert_eq!(LvEventCode::from_u32(39), LvEventCode::Cancel);
     }
+
     #[test]
-    fn value_changed_is_35() {
-        assert_eq!(LvEventCode::ValueChanged as u32, 35);
+    fn screen_events_parse_from_lvgl_9_3_values() {
+        // LVGL v9.3.0 src/misc/lv_event.h:88-91.
+        assert_eq!(LvEventCode::from_u32(46), LvEventCode::ScreenLoadStart);
+        assert_eq!(LvEventCode::from_u32(47), LvEventCode::ScreenLoaded);
+        assert_eq!(LvEventCode::from_u32(48), LvEventCode::ScreenUnloaded);
     }
+
     #[test]
-    fn screen_loaded_is_47() {
-        assert_eq!(LvEventCode::ScreenLoaded as u32, 47);
+    fn unknown_event_codes_are_preserved() {
+        assert_eq!(LvEventCode::from_u32(1234), LvEventCode::Unknown(1234));
+    }
+
+    #[test]
+    fn unknown_event_codes_round_trip_to_raw_value() {
+        assert_eq!(LvEventCode::Unknown(1234).as_u32(), 1234);
     }
 }

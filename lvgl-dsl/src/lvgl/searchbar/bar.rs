@@ -6,6 +6,7 @@ use crate::c_bindings::{
     lv_obj_create, lv_obj_set_flex_flow, lv_obj_set_flex_grow, lv_obj_set_height, lv_obj_set_size,
     lv_obj_set_width, lv_obj_t, lv_pct, lv_textarea_create,
 };
+use core::cell::RefCell;
 
 /// Height of the input row inside the SearchBar's column flex (px).
 /// Sized to fit a 32 px textarea + small vertical padding.
@@ -21,7 +22,7 @@ pub struct Bar {
     pub clear_button: *mut lv_obj_t,
     pub clear_label: *mut lv_obj_t,
     pub result_container: *mut lv_obj_t,
-    pub slots: Slots,
+    pub slots: RefCell<Slots>,
 }
 
 impl Bar {
@@ -69,7 +70,7 @@ impl Bar {
                 clear_button,
                 clear_label,
                 result_container,
-                slots: Slots::default(),
+                slots: RefCell::new(Slots::default()),
             }
         }
     }

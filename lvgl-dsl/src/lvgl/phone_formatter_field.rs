@@ -278,7 +278,7 @@ impl PhoneFormatterField {
             c_bindings::lv_obj_add_event_cb(
                 self.text_area.lv_obj().raw(),
                 Some(on_textarea_value_changed),
-                LvEventCode::ValueChanged as u32,
+                LvEventCode::ValueChanged.as_u32(),
                 self.context.as_ref() as *const FieldContext as *mut core::ffi::c_void,
             );
         }

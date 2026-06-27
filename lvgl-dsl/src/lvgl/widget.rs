@@ -47,9 +47,7 @@ pub trait Widget: Sized {
     }
 
     fn add_style(&self, style: &Style) -> &Self {
-        unsafe {
-            c_bindings::lv_obj_add_style(self.lv_obj().raw(), style.as_raw(), 0);
-        }
+        style.apply_to_raw(self.lv_obj().raw(), 0);
         self
     }
 
@@ -68,23 +66,55 @@ pub trait Widget: Sized {
     }
 
     fn on_event(&self, cb: fn(Event), code: LvEventCode) -> &Self {
-        // One shared trampoline for all safe callbacks.
-        // SAFETY: user_data stores the fn(Event) pointer cast to *mut c_void;
-        // trampoline reads it back with transmute, which is valid because fn pointers
-        // and data pointers are the same size on all supported targets.
+        struct EventCallbackCtx {
+            cb: fn(Event),
+        }
+
+        #[cfg(any(test, no_zephyr))]
+        fn run_event_callback(cb: fn(Event), event: Event) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(event)));
+        }
+
+        #[cfg(not(any(test, no_zephyr)))]
+        fn run_event_callback(cb: fn(Event), event: Event) {
+            cb(event);
+        }
+
         unsafe extern "C" fn trampoline(e: *mut c_bindings::lv_event_t) {
             unsafe {
                 let user_data = c_bindings::lv_event_get_user_data(e);
-                let cb: fn(Event) = core::mem::transmute(user_data);
-                cb(Event::from_raw(e));
+                if user_data.is_null() {
+                    return;
+                }
+                let ctx = &*(user_data as *const EventCallbackCtx);
+                run_event_callback(ctx.cb, Event::from_raw(e));
             }
         }
+
+        unsafe extern "C" fn delete_cleanup(e: *mut c_bindings::lv_event_t) {
+            unsafe {
+                let user_data = c_bindings::lv_event_get_user_data(e);
+                if user_data.is_null() {
+                    return;
+                }
+                drop(alloc::boxed::Box::from_raw(
+                    user_data as *mut EventCallbackCtx,
+                ));
+            }
+        }
+        let ctx = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(EventCallbackCtx { cb }));
         unsafe {
             c_bindings::lv_obj_add_event_cb(
                 self.lv_obj().raw(),
                 Some(trampoline),
-                code as u32,
-                cb as usize as *mut core::ffi::c_void,
+                code.as_u32(),
+                ctx as *mut core::ffi::c_void,
+            );
+            c_bindings::lv_obj_add_event_cb(
+                self.lv_obj().raw(),
+                Some(delete_cleanup),
+                c_bindings::LV_EVENT_DELETE,
+                ctx as *mut core::ffi::c_void,
             );
         }
         self
@@ -164,8 +194,10 @@ pub trait Widget: Sized {
 
     fn set_disabled(&self, disabled: bool) -> &Self {
         if disabled {
+            self.remove_flag(LvObjFlag::CLICKABLE);
             self.add_state(LvState::DISABLED)
         } else {
+            self.add_flag(LvObjFlag::CLICKABLE);
             self.remove_state(LvState::DISABLED)
         }
     }
@@ -399,6 +431,31 @@ pub trait Widget: Sized {
         self
     }
 
+    /// Distance in pixels from the current scroll position to the bottom of
+    /// the scrollable content. A value `<= 0` means the bottom edge has been
+    /// reached (no further scrolling possible). Useful for infinite/lazy
+    /// load-more lists: append the next page when this drops below a small
+    /// threshold inside an `LV_EVENT_SCROLL_END` handler.
+    fn scroll_bottom(&self) -> i32 {
+        unsafe { c_bindings::lv_obj_get_scroll_bottom(self.lv_obj().raw()) }
+    }
+
+    /// Distance in pixels the content has been scrolled past the top edge.
+    /// `0` means the top of the content is flush with the viewport; a positive
+    /// value means that many pixels of content are hidden above the viewport.
+    /// Combined with fixed row heights this lets a list compute which children
+    /// are currently on-screen without querying per-object coordinates.
+    fn scroll_top(&self) -> i32 {
+        unsafe { c_bindings::lv_obj_get_scroll_top(self.lv_obj().raw()) }
+    }
+
+    /// Delete all child objects while keeping this object alive. Thin wrapper
+    /// over `lv_obj_clean`; useful for recycling a fixed-size container (e.g.
+    /// swapping a lazily-decoded image in and out for list virtualization).
+    fn clean(&self) {
+        unsafe { c_bindings::lv_obj_clean(self.lv_obj().raw()) };
+    }
+
     // --- Border (Task 4.3) ---
 
     fn border_color(&self, c: Color) -> &Self {
@@ -421,21 +478,68 @@ pub trait Widget: Sized {
         self
     }
 
-    /// Sets the border color for the pressed state (LV_STATE_PRESSED = 0x0020).
+    /// Sets the border color for the pressed state (LV_STATE_PRESSED).
     fn border_color_pressed(&self, c: Color) -> &Self {
-        unsafe { c_bindings::lv_obj_set_style_border_color(self.lv_obj().raw(), c.to_lv(), 0x0020) };
+        unsafe {
+            c_bindings::lv_obj_set_style_border_color(
+                self.lv_obj().raw(),
+                c.to_lv(),
+                LvState::PRESSED.selector(),
+            )
+        };
         self
     }
 
-    /// Sets the border width for the pressed state (LV_STATE_PRESSED = 0x0020).
+    /// Sets the border width for the pressed state (LV_STATE_PRESSED).
     fn border_width_pressed(&self, w: i32) -> &Self {
-        unsafe { c_bindings::lv_obj_set_style_border_width(self.lv_obj().raw(), w, 0x0020) };
+        unsafe {
+            c_bindings::lv_obj_set_style_border_width(
+                self.lv_obj().raw(),
+                w,
+                LvState::PRESSED.selector(),
+            )
+        };
         self
     }
 
-    /// Sets the background color for the pressed state (LV_STATE_PRESSED = 0x0020).
+    /// Sets the background color for the pressed state (LV_STATE_PRESSED).
     fn bg_color_pressed(&self, c: Color) -> &Self {
-        unsafe { c_bindings::lv_obj_set_style_bg_color(self.lv_obj().raw(), c.to_lv(), 0x0020) };
+        unsafe {
+            c_bindings::lv_obj_set_style_bg_color(
+                self.lv_obj().raw(),
+                c.to_lv(),
+                LvState::PRESSED.selector(),
+            )
+        };
+        self
+    }
+
+    /// Sets the horizontal grow transform for the pressed state
+    /// (LV_STATE_PRESSED). Pass `0` to cancel the default theme's
+    /// press "grow" effect so the widget keeps its layout box while pressed
+    /// (prevents clipping when it sits flush against its container edges).
+    fn transform_width_pressed(&self, w: i32) -> &Self {
+        unsafe {
+            c_bindings::lv_obj_set_style_transform_width(
+                self.lv_obj().raw(),
+                w,
+                LvState::PRESSED.selector(),
+            )
+        };
+        self
+    }
+
+    /// Sets the vertical grow transform for the pressed state
+    /// (LV_STATE_PRESSED). Pass `0` to cancel the default theme's
+    /// press "grow" effect.
+    fn transform_height_pressed(&self, h: i32) -> &Self {
+        unsafe {
+            c_bindings::lv_obj_set_style_transform_height(
+                self.lv_obj().raw(),
+                h,
+                LvState::PRESSED.selector(),
+            )
+        };
         self
     }
 
@@ -535,7 +639,9 @@ pub trait Widget: Sized {
     fn scrollbar_color(&self, c: Color) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_bg_color(
-                self.lv_obj().raw(), c.to_lv(), c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                c.to_lv(),
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -544,7 +650,9 @@ pub trait Widget: Sized {
     fn scrollbar_opa(&self, opa: u8) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_bg_opa(
-                self.lv_obj().raw(), opa, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                opa,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -553,7 +661,9 @@ pub trait Widget: Sized {
     fn scrollbar_width(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_width(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -562,7 +672,9 @@ pub trait Widget: Sized {
     fn scrollbar_pad_left(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_pad_left(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -571,7 +683,9 @@ pub trait Widget: Sized {
     fn scrollbar_pad_top(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_pad_top(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -580,7 +694,9 @@ pub trait Widget: Sized {
     fn scrollbar_pad_bottom(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_pad_bottom(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -589,7 +705,9 @@ pub trait Widget: Sized {
     fn scrollbar_min_height(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_min_height(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -598,7 +716,9 @@ pub trait Widget: Sized {
     fn scrollbar_max_height(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_max_height(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -607,7 +727,9 @@ pub trait Widget: Sized {
     fn scrollbar_border_color(&self, c: Color) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_border_color(
-                self.lv_obj().raw(), c.to_lv(), c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                c.to_lv(),
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -616,7 +738,9 @@ pub trait Widget: Sized {
     fn scrollbar_border_width(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_border_width(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -625,7 +749,9 @@ pub trait Widget: Sized {
     fn scrollbar_border_opa(&self, opa: u8) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_border_opa(
-                self.lv_obj().raw(), opa, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                opa,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -634,7 +760,9 @@ pub trait Widget: Sized {
     fn scrollbar_pad_right(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_pad_right(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -643,7 +771,9 @@ pub trait Widget: Sized {
     fn scrollbar_radius(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_radius(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -652,7 +782,9 @@ pub trait Widget: Sized {
     fn scrollbar_length(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_length(
-                self.lv_obj().raw(), px, c_bindings::LV_PART_SCROLLBAR,
+                self.lv_obj().raw(),
+                px,
+                c_bindings::LV_PART_SCROLLBAR,
             )
         };
         self
@@ -755,6 +887,40 @@ mod tests {
         );
     }
     #[test]
+    fn on_click_registers_delete_cleanup_event() {
+        let p = parent();
+        let obj = Obj::new(&p);
+        spy_drain();
+        fn my_cb(_: Event) {}
+        obj.on_click(my_cb);
+        let calls = spy_drain();
+        assert!(
+            calls.iter().any(|c| matches!(c,
+                LvCall::AddEventCb { code, .. } if *code == crate::c_bindings::LV_EVENT_DELETE
+            )),
+            "expected DELETE cleanup registration, got: {:?}",
+            calls
+        );
+    }
+    #[test]
+    fn on_click_dispatches_boxed_callback() {
+        use crate::c_bindings::{LV_EVENT_CLICKED, spy_emit_event};
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        CALLS.store(0, Ordering::SeqCst);
+        let p = parent();
+        let obj = Obj::new(&p);
+        fn my_cb(_: Event) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        obj.on_click(my_cb);
+        spy_emit_event(obj.lv_obj().raw(), LV_EVENT_CLICKED);
+
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    }
+    #[test]
     fn set_hidden_true_adds_hidden_flag() {
         let p = parent();
         let obj = Obj::new(&p);
@@ -780,8 +946,13 @@ mod tests {
     fn set_disabled_true_adds_disabled_state() {
         let p = parent();
         let obj = Obj::new(&p);
+        obj.add_flag(LvObjFlag::CLICKABLE);
         obj.set_disabled(true);
         assert!(obj.has_state(LvState::DISABLED));
+        assert!(!obj.has_flag(LvObjFlag::CLICKABLE));
+        obj.set_disabled(false);
+        assert!(!obj.has_state(LvState::DISABLED));
+        assert!(obj.has_flag(LvObjFlag::CLICKABLE));
     }
 
     #[test]
@@ -931,6 +1102,40 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, LvCall::SetStyleBgImageRecolorOpa { opa: 128, .. })),
             "expected SetStyleBgImageRecolorOpa{{128}} in spy: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn scroll_top_returns_injected_value() {
+        use crate::c_bindings::set_next_scroll_top;
+        let p = parent();
+        let obj = Obj::new(&p);
+        set_next_scroll_top(37);
+        spy_drain();
+        assert_eq!(obj.scroll_top(), 37);
+        let calls = spy_drain();
+        assert!(
+            calls.iter().any(|c| matches!(c,
+                LvCall::ObjGetScrollTop { ret, .. } if *ret == 37
+            )),
+            "expected ObjGetScrollTop{{ret:37}}, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn clean_records_obj_clean_call() {
+        let p = parent();
+        let obj = Obj::new(&p);
+        spy_drain();
+        obj.clean();
+        let calls = spy_drain();
+        assert!(
+            calls.iter().any(|c| matches!(c,
+                LvCall::ObjClean { obj: raw } if *raw == obj.lv_obj().raw() as usize
+            )),
+            "expected ObjClean for this object, got: {:?}",
             calls
         );
     }

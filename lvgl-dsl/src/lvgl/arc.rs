@@ -13,9 +13,9 @@ use super::widget::{LvObj, Widget};
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ArcMode {
-    Normal      = 0, // c_bindings::LV_ARC_MODE_NORMAL
+    Normal = 0,      // c_bindings::LV_ARC_MODE_NORMAL
     Symmetrical = 1, // c_bindings::LV_ARC_MODE_SYMMETRICAL
-    Reverse     = 2, // c_bindings::LV_ARC_MODE_REVERSE
+    Reverse = 2,     // c_bindings::LV_ARC_MODE_REVERSE
 }
 
 pub struct Arc {
@@ -23,14 +23,20 @@ pub struct Arc {
 }
 
 impl Widget for Arc {
-    fn lv_obj(&self) -> &LvObj { &self.obj }
+    fn lv_obj(&self) -> &LvObj {
+        &self.obj
+    }
 }
 
 impl Arc {
     pub fn new(parent: &impl Widget) -> Arc {
         let obj = unsafe { c_bindings::lv_arc_create(parent.lv_obj().raw()) };
-        if obj.is_null() { panic!("lv_arc_create returned null"); }
-        Arc { obj: LvObj::from_raw(obj) }
+        if obj.is_null() {
+            panic!("lv_arc_create returned null");
+        }
+        Arc {
+            obj: LvObj::from_raw(obj),
+        }
     }
 
     // --- Value & range ---
@@ -47,15 +53,15 @@ impl Arc {
     }
 
     // --- Geometry ---
-    pub fn set_bg_angles(&self, start_deg: u16, end_deg: u16) -> &Self {
+    pub fn set_bg_angles(&self, start_deg: i32, end_deg: i32) -> &Self {
         unsafe { c_bindings::lv_arc_set_bg_angles(self.obj.raw(), start_deg, end_deg) };
         self
     }
-    pub fn set_angles(&self, start_deg: u16, end_deg: u16) -> &Self {
+    pub fn set_angles(&self, start_deg: i32, end_deg: i32) -> &Self {
         unsafe { c_bindings::lv_arc_set_angles(self.obj.raw(), start_deg, end_deg) };
         self
     }
-    pub fn set_rotation(&self, deg: u16) -> &Self {
+    pub fn set_rotation(&self, deg: i32) -> &Self {
         unsafe { c_bindings::lv_arc_set_rotation(self.obj.raw(), deg) };
         self
     }
@@ -82,7 +88,9 @@ impl Arc {
     pub fn track_color(&self, c: Color) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_color(
-                self.obj.raw(), c.to_lv(), c_bindings::LV_PART_MAIN,
+                self.obj.raw(),
+                c.to_lv(),
+                c_bindings::LV_PART_MAIN,
             );
         }
         self
@@ -102,7 +110,9 @@ impl Arc {
     pub fn track_rounded(&self, rounded: bool) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_rounded(
-                self.obj.raw(), rounded, c_bindings::LV_PART_MAIN,
+                self.obj.raw(),
+                rounded,
+                c_bindings::LV_PART_MAIN,
             );
         }
         self
@@ -112,7 +122,9 @@ impl Arc {
     pub fn indicator_color(&self, c: Color) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_color(
-                self.obj.raw(), c.to_lv(), c_bindings::LV_PART_INDICATOR,
+                self.obj.raw(),
+                c.to_lv(),
+                c_bindings::LV_PART_INDICATOR,
             );
         }
         self
@@ -120,7 +132,9 @@ impl Arc {
     pub fn indicator_width(&self, px: i32) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_width(
-                self.obj.raw(), px, c_bindings::LV_PART_INDICATOR,
+                self.obj.raw(),
+                px,
+                c_bindings::LV_PART_INDICATOR,
             );
         }
         self
@@ -128,7 +142,9 @@ impl Arc {
     pub fn indicator_opa(&self, opa: u8) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_opa(
-                self.obj.raw(), opa, c_bindings::LV_PART_INDICATOR,
+                self.obj.raw(),
+                opa,
+                c_bindings::LV_PART_INDICATOR,
             );
         }
         self
@@ -136,7 +152,9 @@ impl Arc {
     pub fn indicator_rounded(&self, rounded: bool) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_rounded(
-                self.obj.raw(), rounded, c_bindings::LV_PART_INDICATOR,
+                self.obj.raw(),
+                rounded,
+                c_bindings::LV_PART_INDICATOR,
             );
         }
         self
@@ -146,7 +164,9 @@ impl Arc {
     pub fn knob_color(&self, c: Color) -> &Self {
         unsafe {
             c_bindings::lv_obj_set_style_arc_color(
-                self.obj.raw(), c.to_lv(), c_bindings::LV_PART_KNOB,
+                self.obj.raw(),
+                c.to_lv(),
+                c_bindings::LV_PART_KNOB,
             );
         }
         self
@@ -155,9 +175,7 @@ impl Arc {
     /// Hide the knob entirely (sets `bg_opa = 0` on the knob part).
     pub fn remove_knob(&self) -> &Self {
         unsafe {
-            c_bindings::lv_obj_set_style_bg_opa(
-                self.obj.raw(), 0, c_bindings::LV_PART_KNOB,
-            );
+            c_bindings::lv_obj_set_style_bg_opa(self.obj.raw(), 0, c_bindings::LV_PART_KNOB);
         }
         self
     }
@@ -172,7 +190,7 @@ impl Arc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c_bindings::{reset_obj_pool, spy_drain, LvCall};
+    use crate::c_bindings::{LvCall, reset_obj_pool, spy_drain};
     use crate::lvgl::screen::Screen;
 
     #[test]
@@ -191,8 +209,16 @@ mod tests {
         a.set_range(0, 1000);
         let calls = spy_drain();
         assert!(
-            calls.iter().any(|c| matches!(c, LvCall::ArcSetRange { min: 0, max: 1000, .. })),
-            "expected ArcSetRange, got: {:?}", calls
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ArcSetRange {
+                    min: 0,
+                    max: 1000,
+                    ..
+                }
+            )),
+            "expected ArcSetRange, got: {:?}",
+            calls
         );
     }
 
@@ -206,20 +232,33 @@ mod tests {
     }
 
     #[test]
-    fn set_bg_angles_and_rotation_record_spies() {
+    fn set_bg_angles_and_rotation_accept_v9_3_i32_values() {
+        // LVGL v9.3.0 src/widgets/arc/lv_arc.h:98,105 use lv_value_precise_t/int32_t.
+        // LVGL v9.3.0 src/misc/lv_types.h:88-92 maps lv_value_precise_t to int32_t when LV_USE_FLOAT=0.
         reset_obj_pool();
         let p = Screen::active();
         let a = Arc::new(&p);
         spy_drain();
-        a.set_bg_angles(0, 360).set_rotation(270);
+        a.set_bg_angles(-45, 405).set_rotation(-90);
         let calls = spy_drain();
         assert!(
-            calls.iter().any(|c| matches!(c, LvCall::ArcSetBgAngles { start: 0, end: 360, .. })),
-            "expected ArcSetBgAngles, got: {:?}", calls
+            calls.iter().any(|c| matches!(
+                c,
+                LvCall::ArcSetBgAngles {
+                    start: -45,
+                    end: 405,
+                    ..
+                }
+            )),
+            "expected ArcSetBgAngles, got: {:?}",
+            calls
         );
         assert!(
-            calls.iter().any(|c| matches!(c, LvCall::ArcSetRotation { rotation: 270, .. })),
-            "expected ArcSetRotation, got: {:?}", calls
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ArcSetRotation { rotation: -90, .. })),
+            "expected ArcSetRotation, got: {:?}",
+            calls
         );
     }
 
@@ -241,14 +280,16 @@ mod tests {
             calls.iter().any(|c| matches!(c,
                 LvCall::StyleArcWidth { width: 12, selector, .. }
                     if *selector == c_bindings::LV_PART_INDICATOR)),
-            "expected indicator-part arc width, got: {:?}", calls
+            "expected indicator-part arc width, got: {:?}",
+            calls
         );
         // Main-part styling
         assert!(
             calls.iter().any(|c| matches!(c,
                 LvCall::StyleArcWidth { width: 12, selector, .. }
                     if *selector == c_bindings::LV_PART_MAIN)),
-            "expected main-part arc width, got: {:?}", calls
+            "expected main-part arc width, got: {:?}",
+            calls
         );
     }
 
@@ -261,8 +302,11 @@ mod tests {
         a.set_mode(ArcMode::Reverse);
         let calls = spy_drain();
         assert!(
-            calls.iter().any(|c| matches!(c, LvCall::ArcSetMode { mode: 2, .. })),
-            "expected ArcSetMode 2 (Reverse), got: {:?}", calls
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ArcSetMode { mode: 2, .. })),
+            "expected ArcSetMode 2 (Reverse), got: {:?}",
+            calls
         );
     }
 }

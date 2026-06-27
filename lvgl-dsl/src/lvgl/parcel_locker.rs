@@ -227,6 +227,17 @@ fn apply_resolved_style(obj: *mut c_bindings::lv_obj_t, style: ResolvedCellStyle
     }
 }
 
+#[cfg(any(test, no_zephyr))]
+fn run_user_callback<F: FnOnce()>(f: F) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok()
+}
+
+#[cfg(not(any(test, no_zephyr)))]
+fn run_user_callback<F: FnOnce()>(f: F) -> bool {
+    f();
+    true
+}
+
 fn assert_cell_index(index: usize, len: usize) {
     assert!(
         index < len,
@@ -242,15 +253,22 @@ unsafe extern "C" fn on_cell_clicked(e: *mut c_bindings::lv_event_t) {
         return;
     }
 
-    let ctx = unsafe { &mut *ctx };
+    let (inner, callback, index) = {
+        let ctx = unsafe { &*ctx };
+        (ctx.inner.clone(), ctx.callback.clone(), ctx.index)
+    };
     let tap = {
         // End the inner borrow before invoking user callbacks; they may call
         // state-mutating APIs like set_status or set_disabled.
-        let inner = ctx.inner.borrow();
-        assert_cell_index(ctx.index, inner.cells.len());
-        let cell = &inner.cells[ctx.index];
+        let Ok(inner) = inner.try_borrow() else {
+            return;
+        };
+        if index >= inner.cells.len() {
+            return;
+        }
+        let cell = &inner.cells[index];
         CellTap {
-            index: ctx.index,
+            index,
             row: cell.definition.row,
             col: cell.definition.col,
             status: cell.status,
@@ -258,8 +276,17 @@ unsafe extern "C" fn on_cell_clicked(e: *mut c_bindings::lv_event_t) {
         }
     };
 
-    if let Some(callback) = ctx.callback.borrow_mut().as_mut() {
-        callback(tap);
+    let mut taken = match callback.try_borrow_mut() {
+        Ok(mut slot) => slot.take(),
+        Err(_) => return,
+    };
+    if let Some(f) = taken.as_mut() {
+        let _ = run_user_callback(|| f(tap));
+    }
+    if let Ok(mut slot) = callback.try_borrow_mut() {
+        if slot.is_none() {
+            *slot = taken;
+        }
     }
 }
 
@@ -928,6 +955,81 @@ mod tests {
                 disabled: true,
             })
         );
+    }
+    #[test]
+    fn cell_tap_callback_may_drop_owner_during_dispatch() {
+        let screen = setup();
+        let holder: alloc::rc::Rc<core::cell::RefCell<Option<ParcelLocker>>> =
+            alloc::rc::Rc::new(core::cell::RefCell::new(None));
+        let locker = ParcelLocker::new(&screen, 2, 2, CELLS);
+        let overlay = locker.cell_overlay_raw(1);
+        let holder_for_cb = holder.clone();
+        locker.on_cell_tap(move |_tap| {
+            holder_for_cb.borrow_mut().take();
+        });
+        holder.borrow_mut().replace(locker);
+
+        crate::c_bindings::spy_emit_event(
+            overlay as *mut crate::c_bindings::lv_obj_t,
+            crate::c_bindings::LV_EVENT_CLICKED,
+        );
+
+        assert!(holder.borrow().is_none());
+    }
+
+    #[test]
+    fn cell_trampoline_swallows_panicking_callback() {
+        let screen = setup();
+        let locker = ParcelLocker::new(&screen, 2, 2, CELLS);
+        let overlay = locker.cell_overlay_raw(1);
+        locker.on_cell_tap(|_tap| panic!("cell callback boom"));
+
+        crate::c_bindings::spy_emit_event(
+            overlay as *mut crate::c_bindings::lv_obj_t,
+            crate::c_bindings::LV_EVENT_CLICKED,
+        );
+
+        assert_eq!(locker.cell_status(1), CellStatusId::DEFAULT);
+    }
+
+    #[test]
+    fn cell_trampoline_returns_when_inner_is_already_borrowed() {
+        let screen = setup();
+        let locker = ParcelLocker::new(&screen, 2, 2, CELLS);
+        let overlay = locker.cell_overlay_raw(1);
+        let _borrow = locker.inner.borrow_mut();
+
+        crate::c_bindings::spy_emit_event(
+            overlay as *mut crate::c_bindings::lv_obj_t,
+            crate::c_bindings::LV_EVENT_CLICKED,
+        );
+    }
+
+    #[test]
+    fn cell_callback_is_restored_after_panic() {
+        let screen = setup();
+        let locker = ParcelLocker::new(&screen, 2, 2, CELLS);
+        let overlay = locker.cell_overlay_raw(1);
+        let calls = alloc::rc::Rc::new(core::cell::Cell::new(0));
+        let calls_for_cb = calls.clone();
+        locker.on_cell_tap(move |_tap| {
+            let n = calls_for_cb.get();
+            calls_for_cb.set(n + 1);
+            if n == 0 {
+                panic!("first cell callback boom");
+            }
+        });
+
+        crate::c_bindings::spy_emit_event(
+            overlay as *mut crate::c_bindings::lv_obj_t,
+            crate::c_bindings::LV_EVENT_CLICKED,
+        );
+        crate::c_bindings::spy_emit_event(
+            overlay as *mut crate::c_bindings::lv_obj_t,
+            crate::c_bindings::LV_EVENT_CLICKED,
+        );
+
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn set_anim_params_records_spy() {
-        use crate::c_bindings::{spy_drain, LvCall};
+        use crate::c_bindings::{LvCall, spy_drain};
 
         reset_obj_pool();
         let p = Screen::active();
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn track_and_indicator_color_use_correct_parts() {
-        use crate::c_bindings::{spy_drain, LvCall, LV_PART_INDICATOR, LV_PART_MAIN};
+        use crate::c_bindings::{LV_PART_INDICATOR, LV_PART_MAIN, LvCall, spy_drain};
 
         reset_obj_pool();
         let p = Screen::active();
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn track_and_indicator_width_use_correct_parts() {
-        use crate::c_bindings::{spy_drain, LvCall, LV_PART_INDICATOR, LV_PART_MAIN};
+        use crate::c_bindings::{LV_PART_INDICATOR, LV_PART_MAIN, LvCall, spy_drain};
 
         reset_obj_pool();
         let p = Screen::active();
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn track_and_indicator_opa_use_correct_parts() {
-        use crate::c_bindings::{spy_drain, LvCall, LV_PART_INDICATOR, LV_PART_MAIN};
+        use crate::c_bindings::{LV_PART_INDICATOR, LV_PART_MAIN, LvCall, spy_drain};
 
         reset_obj_pool();
         let p = Screen::active();

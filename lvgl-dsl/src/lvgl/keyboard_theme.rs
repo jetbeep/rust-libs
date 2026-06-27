@@ -9,19 +9,19 @@ use super::Font;
 pub(crate) const SELECTOR_KEY_NORMAL: u32 = 0x0005_0000;
 
 /// Style selector targeting all keys in their pressed state.
-/// `LV_PART_ITEMS | LV_STATE_PRESSED = 0x00050020`
+/// `LV_PART_ITEMS | LV_STATE_PRESSED` where LVGL v9.3 `LV_STATE_PRESSED = 0x20`.
 pub(crate) const SELECTOR_KEY_PRESSED: u32 = 0x0005_0020;
 
 /// Style selector targeting action keys (Enter, Backspace, etc.).
 ///
 /// Action keys are marked with `LV_BUTTONMATRIX_CTRL_CHECKED` in the ctrl
 /// map, which makes LVGL apply `LV_STATE_CHECKED` during drawing.
-/// `LV_PART_ITEMS | LV_STATE_CHECKED = 0x00050001`
+/// `LV_PART_ITEMS | LV_STATE_CHECKED` where LVGL v9.3 `LV_STATE_CHECKED = 0x01`.
 pub(crate) const SELECTOR_KEY_ACTION: u32 = 0x0005_0001;
 
 /// Style selector targeting keys whose `LV_BUTTONMATRIX_CTRL_DISABLED`
 /// flag has been set (e.g. via [`crate::lvgl::Keyboard::set_continue_enabled`]).
-/// `LV_PART_ITEMS | LV_STATE_DISABLED = 0x00050080`
+/// `LV_PART_ITEMS | LV_STATE_DISABLED` where LVGL v9.3 `LV_STATE_DISABLED = 0x80`.
 pub(crate) const SELECTOR_KEY_DISABLED: u32 = 0x0005_0080;
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ pub(crate) const SELECTOR_KEY_DISABLED: u32 = 0x0005_0080;
 /// Two ready-to-use themes are provided as associated constants:
 ///
 /// ```rust
-/// use lvgl_dsl::lvgl::prelude::*;
+/// use jetbeep_lvgl_dsl::lvgl::prelude::*;
 ///
 /// let kb = Keyboard::new(&screen);
 /// kb.theme(&KeyboardTheme::DARK);
@@ -84,7 +84,20 @@ impl KeyboardTheme {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyboardTheme;
+    use super::{
+        KeyboardTheme, SELECTOR_KEY_ACTION, SELECTOR_KEY_DISABLED, SELECTOR_KEY_NORMAL,
+        SELECTOR_KEY_PRESSED,
+    };
+
+    #[test]
+    fn key_selectors_match_lvgl_9_3_part_and_state_values() {
+        // LVGL v9.3.0 src/widgets/buttonmatrix/lv_buttonmatrix.h:36-42 (LV_PART_ITEMS = 5).
+        // LVGL v9.3.0 src/core/lv_obj.h:47-55 (CHECKED=0x0001, PRESSED=0x0020, DISABLED=0x0080).
+        assert_eq!(SELECTOR_KEY_NORMAL, 0x0005_0000);
+        assert_eq!(SELECTOR_KEY_ACTION, 0x0005_0001);
+        assert_eq!(SELECTOR_KEY_PRESSED, 0x0005_0020);
+        assert_eq!(SELECTOR_KEY_DISABLED, 0x0005_0080);
+    }
 
     #[test]
     fn light_theme_bg_is_bright() {

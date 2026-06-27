@@ -90,7 +90,7 @@ impl QrCode {
                 data_len,
             )
         };
-        if result == c_bindings::lv_result_t_LV_RESULT_OK {
+        if result == c_bindings::LV_RESULT_OK {
             Ok(())
         } else {
             Err(())
