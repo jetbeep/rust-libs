@@ -1,0 +1,14 @@
+[package]
+name = "fonts-cache"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+
+# Pure-Rust, no_std on-demand LVGL font cache. FFI symbols (lv_binfont_*,
+# lv_fs_*) are resolved by the final binary's LVGL; this rlib only references
+# them.

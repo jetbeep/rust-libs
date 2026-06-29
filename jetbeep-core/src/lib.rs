@@ -32,6 +32,9 @@ pub mod fs;
 #[path = "fs_zephyr.rs"]
 pub mod fs;
 
+/// File-backed JKV read/write helpers (platform-agnostic; built on `fs` + `jkv`).
+pub mod jkv_file;
+
 #[cfg(feature = "platform-desktop")]
 pub mod bus;
 
