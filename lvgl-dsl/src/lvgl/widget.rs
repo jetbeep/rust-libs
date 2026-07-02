@@ -165,6 +165,27 @@ pub trait Widget: Sized {
         unsafe { c_bindings::lv_obj_get_width(self.lv_obj().raw()) }
     }
 
+    /// Returns the object's current height in pixels.
+    ///
+    /// Only meaningful after the object has been laid out, so call it once the
+    /// containing screen has been rendered (e.g. on a user interaction), not
+    /// immediately after construction.
+    #[must_use]
+    fn get_height(&self) -> i32 {
+        unsafe { c_bindings::lv_obj_get_height(self.lv_obj().raw()) }
+    }
+
+    /// Returns the child object at `idx` or `None` if out of range.
+    #[must_use]
+    fn child(&self, idx: i32) -> Option<LvObj> {
+        let child = unsafe { c_bindings::lv_obj_get_child(self.lv_obj().raw(), idx) };
+        if child.is_null() {
+            None
+        } else {
+            Some(LvObj::from_raw(child))
+        }
+    }
+
     // --- Flags ---
 
     fn add_flag(&self, flag: LvObjFlag) -> &Self {

@@ -55,6 +55,7 @@ pub enum LvEventCode {
     ScreenLoadStart,
     ScreenLoaded,
     ScreenUnloaded,
+    SizeChanged,
     Unknown(u32),
 }
 
@@ -78,6 +79,7 @@ impl LvEventCode {
             Self::ScreenLoadStart => 46,
             Self::ScreenLoaded => 47,
             Self::ScreenUnloaded => 48,
+            Self::SizeChanged => 49,
             Self::Unknown(v) => v,
         }
     }
@@ -99,6 +101,7 @@ impl LvEventCode {
             46 => Self::ScreenLoadStart,
             47 => Self::ScreenLoaded,
             48 => Self::ScreenUnloaded,
+            49 => Self::SizeChanged,
             _ => Self::Unknown(v),
         }
     }
@@ -126,6 +129,7 @@ mod tests {
         assert_eq!(LvEventCode::ScreenLoadStart.as_u32(), 46);
         assert_eq!(LvEventCode::ScreenLoaded.as_u32(), 47);
         assert_eq!(LvEventCode::ScreenUnloaded.as_u32(), 48);
+        assert_eq!(LvEventCode::SizeChanged.as_u32(), 49);
     }
 
     #[test]
@@ -141,6 +145,7 @@ mod tests {
         assert_eq!(LvEventCode::from_u32(46), LvEventCode::ScreenLoadStart);
         assert_eq!(LvEventCode::from_u32(47), LvEventCode::ScreenLoaded);
         assert_eq!(LvEventCode::from_u32(48), LvEventCode::ScreenUnloaded);
+        assert_eq!(LvEventCode::from_u32(49), LvEventCode::SizeChanged);
     }
 
     #[test]

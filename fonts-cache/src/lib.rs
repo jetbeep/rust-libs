@@ -269,6 +269,29 @@ pub fn get(name: &str, fallback: *const c_void) -> *const c_void {
     }
 }
 
+/// Force the font named `name` to be fully loaded now — runs the expensive
+/// `lv_binfont_create` glyph-table build (the cost normally paid lazily on the
+/// first render/measure). Creates the proxy first if needed. Returns `true`
+/// when the real font (not the fallback) ended up resident.
+///
+/// Intended for background warming so a font-heavy screen's first build doesn't
+/// stall on synchronous loads. MUST be called on the LVGL thread (the cache and
+/// the LVGL heap are single-threaded).
+pub fn warm(name: &str, fallback: *const c_void) -> bool {
+    unsafe {
+        // Ensure the proxy/entry exists (reads the file header on first call).
+        let _ = get(name, fallback);
+        let c = cache();
+        for boxed in c.entries.iter_mut() {
+            if boxed.name == name {
+                let ep: *mut Entry = &mut **boxed;
+                return ensure_loaded(&mut *ep) && !(*ep).is_fallback;
+            }
+        }
+        false
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Proxy callbacks
 // ---------------------------------------------------------------------------
