@@ -293,6 +293,7 @@ fn read_device_settings_from_config(config_path: &str) -> Result<DeviceSettings,
         message: format!("failed parsing wrapped config {}: {}", path.display(), err),
     })?;
 
+    normalize_user_params_json(&mut json_value)?;
     normalize_keypad_alphabet_enum_strings(&mut json_value);
 
     let root: SingleFileSimulatorConfig = serde_json::from_value(json_value).map_err(|err| Error {
@@ -301,6 +302,42 @@ fn read_device_settings_from_config(config_path: &str) -> Result<DeviceSettings,
     })?;
 
     Ok(root.device_settings)
+}
+
+#[cfg(feature = "simulator")]
+fn normalize_user_params_json(root: &mut serde_json::Value) -> Result<(), Error> {
+    let Some(user_settings) = root
+        .get_mut("device_settings")
+        .and_then(|v| v.get_mut("user_settings"))
+    else {
+        return Ok(());
+    };
+
+    let Some(user_params_json) = user_settings
+        .get("user_params_json")
+        .cloned()
+    else {
+        return Ok(());
+    };
+
+    let encoded = jkv::to_vec_with_header(&user_params_json).map_err(|err| Error {
+        code: -22,
+        message: format!("failed encoding device_settings.user_settings.user_params_json as JKV: {}", err),
+    })?;
+
+    let bytes_json = serde_json::Value::Array(
+        encoded
+            .into_iter()
+            .map(|b| serde_json::Value::Number(serde_json::Number::from(b)))
+            .collect(),
+    );
+
+    if let Some(map) = user_settings.as_object_mut() {
+        map.insert("user_params".to_string(), bytes_json);
+        map.remove("user_params_json");
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "simulator")]
