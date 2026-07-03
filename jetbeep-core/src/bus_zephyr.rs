@@ -32,6 +32,12 @@ pub type ModemInfo = PollModemGetInfoResponse;
 pub type BatteryInfo = PollBatteryGetInfoResponse;
 pub type VersionInfo = PollVersionInfoResponse;
 
+#[derive(Clone, PartialEq, Message)]
+struct PollGetDeviceSettingsResponse {
+	#[prost(message, optional, tag = "1")]
+	pub settings: Option<DeviceSettings>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeypadKey {
 	Digit(u8),
@@ -742,15 +748,24 @@ unsafe extern "C" fn cb_device_settings(error: *const jb_error_t, data: *const u
 				return;
 			};
 
-			match DeviceSettings::decode(payload.as_slice()) {
-				Ok(settings) => {
-					sender.send(Ok(settings)).ok();
+			match PollGetDeviceSettingsResponse::decode(payload.as_slice()) {
+				Ok(response) => {
+					if let Some(settings) = response.settings {
+						sender.send(Ok(settings)).ok();
+					} else {
+						sender
+							.send(Err(Error {
+								code: -22,
+								message: "PollGetDeviceSettingsResponse.settings is missing".to_string(),
+							}))
+							.ok();
+					}
 				}
 				Err(decode_err) => {
 					sender
 						.send(Err(Error {
 							code: -22,
-							message: format!("failed to decode DeviceSettings protobuf: {}", decode_err),
+							message: format!("failed to decode PollGetDeviceSettingsResponse protobuf: {}", decode_err),
 						}))
 						.ok();
 				}
