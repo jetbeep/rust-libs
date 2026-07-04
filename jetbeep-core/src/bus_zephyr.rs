@@ -448,7 +448,23 @@ pub async fn barcode_scanner_stop() -> Result<(), Error> {
 }
 
 /// Sends POLL_CMD_SLEEP to mainboard asynchronously.
+///
+/// Turns the backlight off before requesting sleep and soft-kills the running
+/// app immediately after handing the request to the C bus layer. The shutdown
+/// must NOT wait for the ack: the mainboard's sleep handler releases the
+/// screen power reference and may stop polling (or cut power) before the
+/// response is delivered, which would leave the app running with its timers
+/// (e.g. the idle tick loop) alive. The RPC delivery itself is owned by the
+/// C poll machinery and is unaffected by the Rust teardown; a late ack is
+/// dropped by the generation gate together with this task.
 pub async fn sleep() -> Result<(), Error> {
+	unsafe extern "C" {
+		fn screen_backlight_set(percent: u8);
+		fn rust_workq_request_shutdown();
+	}
+
+	unsafe { screen_backlight_set(0) };
+
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
 	unsafe {
 		poll_cmd_sleep(
@@ -457,7 +473,13 @@ pub async fn sleep() -> Result<(), Error> {
 			Box::into_raw(Box::new(sender)) as *mut _,
 		);
 	}
-	receiver.await.unwrap()
+
+	unsafe { rust_workq_request_shutdown() };
+
+	// The queued shutdown cancels this task at its next suspension point, so
+	// this await normally never resolves — it only completes if the ack wins
+	// the race against the shutdown task.
+	receiver.await.unwrap_or(Ok(()))
 }
 
 /// Subscribe to scanned barcode events.
