@@ -35,11 +35,15 @@ pub type VersionInfo = PollVersionInfoResponse;
 
 pub const SERVER_REQUEST_DEFAULT_REQUEST_TYPE: i32 = 0;
 pub const SERVER_REQUEST_DEFAULT_TIMEOUT_MS: i32 = 30_000;
+pub const SERVER_REQUEST_DEFAULT_SUCCESS_CODES: &[i32] = &[200, 201];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerRequestParams {
     pub request_type: i32,
     pub timeout_ms: i32,
+    /// HTTP status codes treated as success; any other status code is
+    /// returned as `Err` with the status code in `Error::code`.
+    pub success_codes: &'static [i32],
 }
 
 impl Default for ServerRequestParams {
@@ -47,8 +51,46 @@ impl Default for ServerRequestParams {
         Self {
             request_type: SERVER_REQUEST_DEFAULT_REQUEST_TYPE,
             timeout_ms: SERVER_REQUEST_DEFAULT_TIMEOUT_MS,
+            success_codes: SERVER_REQUEST_DEFAULT_SUCCESS_CODES,
         }
     }
+}
+
+/// Server response: HTTP `status_code` plus the `data` payload, matching the
+/// backend envelope `{ "status_code": <int>, "data": {...} }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerResponse {
+    pub status_code: i32,
+    pub data: JkvValue,
+}
+
+/// Split the `{ status_code, data }` envelope into a [`ServerResponse`].
+/// A payload without `status_code` is treated as a bare 200 response.
+fn into_server_response(value: JkvValue, success_codes: &[i32]) -> Result<ServerResponse, Error> {
+    let status_code = match value.get_key("status_code") {
+        Some(JkvValue::Int(v)) => *v,
+        _ => {
+            return Ok(ServerResponse { status_code: 200, data: value });
+        }
+    };
+
+    if !success_codes.contains(&status_code) {
+        return Err(Error {
+            code: status_code,
+            message: format!("server request failed with status {}", status_code),
+        });
+    }
+
+    let data = match value {
+        JkvValue::Collection(entries) => entries
+            .into_iter()
+            .rev()
+            .find_map(|(k, v)| matches!(&k, JkvKey::String(s) if s == "data").then_some(v))
+            .unwrap_or(JkvValue::Collection(Vec::new())),
+        _ => JkvValue::Collection(Vec::new()),
+    };
+
+    Ok(ServerResponse { status_code, data })
 }
 
 fn jkv_key_to_json_key(key: &JkvKey) -> String {
@@ -140,14 +182,14 @@ fn json_to_jkv_value(value: serde_json::Value) -> Result<JkvValue, Error> {
     }
 }
 
-async fn server_request_impl(request_type: i32, timeout_ms: i32, body: JkvValue) -> Result<JkvValue, Error> {
+async fn server_request_impl(params: ServerRequestParams, body: JkvValue) -> Result<ServerResponse, Error> {
     let response = modem_request_json(
         jkv_to_json_value(&body),
         Some(crate::agent::client::ScriptTypeOrString::Type(
             crate::agent::client::AspScriptType::Ui,
         )),
-        Some(request_type),
-        Some(timeout_ms),
+        Some(params.request_type),
+        Some(params.timeout_ms),
     )
         .await
         .map_err(|err| Error {
@@ -155,7 +197,8 @@ async fn server_request_impl(request_type: i32, timeout_ms: i32, body: JkvValue)
             message: format!("server_request modem_request failed: {}", err),
         })?;
 
-    json_to_jkv_value(response)
+    let value = json_to_jkv_value(response)?;
+    into_server_response(value, params.success_codes)
 }
 
 async fn modem_request_json(
@@ -396,13 +439,13 @@ pub async fn sleep() -> Result<(), Error> {
 }
 
 #[cfg(feature = "simulator")]
-pub async fn server_request(body: JkvValue) -> Result<JkvValue, Error> {
+pub async fn server_request(body: JkvValue) -> Result<ServerResponse, Error> {
     server_request_ex(body, ServerRequestParams::default()).await
 }
 
 #[cfg(feature = "simulator")]
-pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<JkvValue, Error> {
-    server_request_impl(params.request_type, params.timeout_ms, body).await
+pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
+    server_request_impl(params, body).await
 }
 
 #[cfg(feature = "simulator")]
@@ -499,13 +542,13 @@ pub async fn sleep() -> Result<(), Error> {
 }
 
 #[cfg(not(feature = "simulator"))]
-pub async fn server_request(body: JkvValue) -> Result<JkvValue, Error> {
+pub async fn server_request(body: JkvValue) -> Result<ServerResponse, Error> {
     server_request_ex(body, ServerRequestParams::default()).await
 }
 
 #[cfg(not(feature = "simulator"))]
-pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<JkvValue, Error> {
-    server_request_impl(params.request_type, params.timeout_ms, body).await
+pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
+    server_request_impl(params, body).await
 }
 
 #[cfg(not(feature = "simulator"))]
