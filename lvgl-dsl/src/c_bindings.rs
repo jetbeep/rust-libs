@@ -305,6 +305,7 @@ mod desktop {
         pub fn lv_obj_set_style_pad_right(obj: *mut lv_obj_t, value: i32, selector: u32);
         pub fn lv_obj_set_style_margin_top(obj: *mut lv_obj_t, value: i32, selector: u32);
         pub fn lv_obj_set_style_margin_left(obj: *mut lv_obj_t, value: i32, selector: u32);
+        pub fn lv_obj_set_style_margin_right(obj: *mut lv_obj_t, value: i32, selector: u32);
         pub fn lv_obj_set_style_margin_bottom(obj: *mut lv_obj_t, value: i32, selector: u32);
 
         // Background
@@ -506,6 +507,7 @@ mod desktop {
         // Y-coordinate helpers (used by slide animations)
         pub fn lv_obj_set_y(obj: *mut lv_obj_t, y: i32);
         pub fn lv_obj_get_height(obj: *mut lv_obj_t) -> i32;
+        pub fn lv_obj_update_layout(obj: *mut lv_obj_t);
 
         // Animation API (lv_anim.h)
         pub fn lv_anim_init(a: *mut lv_anim_t);
@@ -1199,6 +1201,10 @@ mod mock {
             value: i32,
         },
         SetStyleMarginLeft {
+            obj: usize,
+            value: i32,
+        },
+        SetStyleMarginRight {
             obj: usize,
             value: i32,
         },
@@ -2118,6 +2124,14 @@ mod mock {
     pub unsafe fn lv_obj_set_style_margin_left(obj: *mut lv_obj_t, value: i32, _: u32) {
         SPY.with(|s| {
             s.borrow_mut().push(LvCall::SetStyleMarginLeft {
+                obj: obj as usize,
+                value,
+            })
+        });
+    }
+    pub unsafe fn lv_obj_set_style_margin_right(obj: *mut lv_obj_t, value: i32, _: u32) {
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::SetStyleMarginRight {
                 obj: obj as usize,
                 value,
             })
@@ -3102,6 +3116,7 @@ mod mock {
     pub unsafe fn lv_obj_get_height(_obj: *mut lv_obj_t) -> i32 {
         480
     }
+    pub unsafe fn lv_obj_update_layout(_obj: *mut lv_obj_t) {}
 
     // ---------------------------------------------------------
     // Animation API

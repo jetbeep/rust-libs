@@ -191,6 +191,16 @@ struct KbHandlerState {
     /// override, so [`Keyboard::on_continue`] callbacks still fire and
     /// [`Keyboard::set_continue_enabled`] still works.
     continue_label: Option<&'static core::ffi::CStr>,
+    /// Optional override for the visible label of the `Back` key.
+    ///
+    /// When `Some(label)`, every cell whose text matches [`KEY_BACK`] in
+    /// the installed map is rewritten (in the per-mode mirror buffer) to
+    /// point at `label`. The key continues to behave like Back — the event
+    /// handler matches against both [`KEY_BACK`] and this override, so the
+    /// `LvEventCode::Cancel` event still fires and [`Keyboard::on_back`]
+    /// callbacks still work. Used to localise the nav label (e.g.
+    /// `Back` → `Retour`).
+    back_label: Option<&'static core::ffi::CStr>,
     /// The most recently installed layout, used by [`Keyboard::del_as_icon`]
     /// to reinstall the *currently active* map (rather than always falling
     /// back to the locale's lc/uc map, which would clobber a
@@ -444,6 +454,7 @@ unsafe fn install_key_label_mirror(
     let bs_ptr = KEY_BACKSPACE.as_ptr();
     let empty_sentinel: *const c_char = c"".as_ptr();
     let continue_override_ptr: Option<*const c_char> = state.continue_label.map(|s| s.as_ptr());
+    let back_override_ptr: Option<*const c_char> = state.back_label.map(|s| s.as_ptr());
 
     // Probe the source map first; if it doesn't fit, fall back without
     // touching the destination (so the previously installed mirror for
@@ -501,6 +512,12 @@ unsafe fn install_key_label_mirror(
             } else {
                 p
             }
+        } else if bytes == KEY_BACK.to_bytes() {
+            if let Some(override_ptr) = back_override_ptr {
+                override_ptr
+            } else {
+                p
+            }
         } else {
             p
         };
@@ -521,7 +538,8 @@ fn install_lc_map(obj: *mut c_bindings::lv_obj_t, locale: KeyboardLocale) {
             if let Some(state) = KB_STATE.get_mut().as_mut() {
                 mode = state.mode_for_locale(locale);
                 continue_state = Some((state.continue_enabled, state.continue_label));
-                if state.del_as_icon || state.continue_label.is_some() {
+                if state.del_as_icon || state.continue_label.is_some() || state.back_label.is_some()
+                {
                     map_ptr = install_key_label_mirror(state, mode, map_ptr);
                 }
             }
@@ -546,7 +564,8 @@ fn install_uc_map(obj: *mut c_bindings::lv_obj_t, locale: KeyboardLocale) {
             if let Some(state) = KB_STATE.get_mut().as_mut() {
                 mode = state.mode_for_locale(locale);
                 continue_state = Some((state.continue_enabled, state.continue_label));
-                if state.del_as_icon || state.continue_label.is_some() {
+                if state.del_as_icon || state.continue_label.is_some() || state.back_label.is_some()
+                {
                     map_ptr = install_key_label_mirror(state, mode, map_ptr);
                 }
             }
@@ -571,7 +590,7 @@ fn install_special_map(obj: *mut c_bindings::lv_obj_t) {
     unsafe {
         if let Some(state) = KB_STATE.get_mut().as_mut() {
             continue_state = Some((state.continue_enabled, state.continue_label));
-            if state.del_as_icon || state.continue_label.is_some() {
+            if state.del_as_icon || state.continue_label.is_some() || state.back_label.is_some() {
                 map_ptr = install_key_label_mirror(state, LvKeyboardMode::Special as u32, map_ptr);
             }
         }
@@ -833,7 +852,15 @@ unsafe extern "C" fn back_outline_draw_task_cb(e: *mut c_bindings::lv_event_t) {
     let button_id = unsafe { (*border).base.id1 };
     let target = unsafe { c_bindings::lv_event_get_target(e) as *const c_bindings::lv_obj_t };
     let text = unsafe { c_bindings::lv_buttonmatrix_get_button_text(target, button_id) };
-    if !text.is_null() && unsafe { core::ffi::CStr::from_ptr(text) } == KEY_BACK {
+    let is_back_key = !text.is_null() && {
+        let label = unsafe { core::ffi::CStr::from_ptr(text) };
+        label == KEY_BACK
+            || unsafe { KB_STATE.get() }
+                .as_ref()
+                .and_then(|state| state.back_label)
+                .is_some_and(|lbl| label == lbl)
+    };
+    if is_back_key {
         unsafe {
             (*border).color = outline.color.to_lv();
             (*border).width = outline.width;
@@ -926,7 +953,12 @@ unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
         return;
     }
 
-    if txt == KEY_BACK {
+    if txt == KEY_BACK
+        || unsafe { KB_STATE.get() }
+            .as_ref()
+            .and_then(|st| st.back_label)
+            .is_some_and(|lbl| txt == lbl)
+    {
         // Fire cancel event
         unsafe {
             c_bindings::lv_obj_send_event(obj, LvEventCode::Cancel.as_u32(), core::ptr::null_mut());
@@ -1166,6 +1198,7 @@ impl Keyboard {
                 font_ptr: core::ptr::null(),
                 del_as_icon: false,
                 continue_label: None,
+                back_label: None,
                 active_layout: Some(KeyboardLayout::Locale(KeyboardLocale::EnUs)),
                 continue_enabled: true,
                 back_outline: None,
@@ -1549,6 +1582,72 @@ impl Keyboard {
         // A previously-installed slot for a different mode (e.g. a
         // custom layout that was active when transforms were enabled)
         // may still dereference its mirror buffer when reactivated.
+        self
+    }
+
+    /// Overrides the visible label of the `Back` key.
+    ///
+    /// Passing `Some(label)` rewrites every cell whose text matches
+    /// [`KEY_BACK`] in the installed maps (lc/uc per locale, plus the custom
+    /// Special map) to display `label` instead. The key continues to behave
+    /// as Back: it still fires `LvEventCode::Cancel` (so
+    /// [`Keyboard::on_back`] callbacks fire) and keeps its Back-key outline.
+    /// Used to localise the nav label (e.g. `Back` → `Retour`).
+    ///
+    /// The same reserved-label guard as [`Keyboard::continue_label`] applies:
+    /// labels that collide with other action keys, or that break the LVGL
+    /// map (empty / `"\n"`), are rejected (debug panic; no-op otherwise).
+    ///
+    /// Passing `None` restores the default `Back` label from the active
+    /// keymap.
+    ///
+    /// `label` must be `&'static CStr` because LVGL retains the pointer and
+    /// dereferences it on every repaint.
+    pub fn back_label(&self, label: Option<&'static core::ffi::CStr>) -> &Self {
+        if let Some(lbl) = label {
+            if !is_continue_label_allowed(lbl) {
+                debug_assert!(
+                    false,
+                    "Keyboard::back_label: label {:?} collides with a \
+                     reserved action-key label or breaks the LVGL map",
+                    lbl
+                );
+                #[cfg(any(test, no_zephyr))]
+                eprintln!(
+                    "[jetbeep-lvgl-dsl] Keyboard::back_label: rejected label \
+                     {:?} (collides with reserved action-key label or breaks LVGL \
+                     map); keeping previous label",
+                    lbl
+                );
+                return self;
+            }
+        }
+        let (uppercase, active_layout) = unsafe {
+            let state = KB_STATE.get_mut();
+            if let Some(state) = state.as_mut() {
+                state.back_label = label;
+                (state.uppercase, state.active_layout)
+            } else {
+                return self;
+            }
+        };
+        match active_layout {
+            Some(KeyboardLayout::Locale(locale)) => {
+                if uppercase {
+                    install_uc_map(self.lv_obj().raw(), locale);
+                } else {
+                    install_lc_map(self.lv_obj().raw(), locale);
+                }
+            }
+            Some(layout) => {
+                self.layout(layout);
+            }
+            None => {}
+        }
+        install_special_map(self.lv_obj().raw());
+        // See `continue_label`: we intentionally do NOT clear
+        // `KEY_LABEL_MIRRORS` when `label` is `None`, because LVGL retains
+        // map pointers for every mode slot ever installed.
         self
     }
 
@@ -3306,6 +3405,7 @@ mod tests {
             font_ptr: core::ptr::null(),
             del_as_icon: true,
             continue_label: None,
+            back_label: None,
             active_layout: None,
             continue_enabled: true,
             back_outline: None,
