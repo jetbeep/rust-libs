@@ -1659,7 +1659,7 @@ pub static KEYMAP_QWERTY_FRCH_LC: &KeyMap = &[
     k!(c"\n"),
     // Row 4 — navigation
     ka!(KEY_BACK),
-    ka!(KEY_LANG_CH),
+    ka!(KEY_LANG_FR),
     ka!(KEY_123),
     ka!(KEY_SPACE),
     ka!(KEY_CONTINUE),
@@ -1710,7 +1710,7 @@ pub static KEYMAP_QWERTY_FRCH_UC: &KeyMap = &[
     k!(c"\n"),
     // Row 4 — navigation
     ka!(KEY_BACK),
-    ka!(KEY_LANG_CH),
+    ka!(KEY_LANG_FR),
     ka!(KEY_123),
     ka!(KEY_SPACE),
     ka!(KEY_CONTINUE),

@@ -353,6 +353,11 @@ pub trait Widget: Sized {
         self
     }
 
+    fn margin_right(&self, px: i32) -> &Self {
+        unsafe { c_bindings::lv_obj_set_style_margin_right(self.lv_obj().raw(), px, 0) };
+        self
+    }
+
     fn margin_bottom(&self, px: i32) -> &Self {
         unsafe { c_bindings::lv_obj_set_style_margin_bottom(self.lv_obj().raw(), px, 0) };
         self
@@ -812,9 +817,15 @@ pub trait Widget: Sized {
     }
 
     fn delete(self) {
-        // SAFETY: `self` is consumed, preventing use after `lv_obj_delete` invalidates the handle.
+        // SAFETY: `lv_obj_is_valid` mirrors LVGL's own safe stale-pointer probe:
+        // it checks membership in the live object tree without dereferencing
+        // `raw`. We only call `lv_obj_delete` for still-live objects, which
+        // prevents a crash on deleting an already-deleted object.
+        let raw = self.lv_obj().raw();
         unsafe {
-            c_bindings::lv_obj_delete(self.lv_obj().raw());
+            if c_bindings::lv_obj_is_valid(raw) {
+                c_bindings::lv_obj_delete(raw);
+            }
         }
     }
 }
