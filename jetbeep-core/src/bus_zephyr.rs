@@ -75,11 +75,15 @@ impl KeypadKey {
 
 pub const SERVER_REQUEST_DEFAULT_REQUEST_TYPE: i32 = 0;
 pub const SERVER_REQUEST_DEFAULT_TIMEOUT_MS: i32 = 30_000;
+pub const SERVER_REQUEST_DEFAULT_SUCCESS_CODES: &[i32] = &[200, 201];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerRequestParams {
 	pub request_type: i32,
 	pub timeout_ms: i32,
+	/// HTTP status codes treated as success; any other status code is
+	/// returned as `Err` with the status code in `Error::code`.
+	pub success_codes: &'static [i32],
 }
 
 impl Default for ServerRequestParams {
@@ -87,8 +91,46 @@ impl Default for ServerRequestParams {
 		Self {
 			request_type: SERVER_REQUEST_DEFAULT_REQUEST_TYPE,
 			timeout_ms: SERVER_REQUEST_DEFAULT_TIMEOUT_MS,
+			success_codes: SERVER_REQUEST_DEFAULT_SUCCESS_CODES,
 		}
 	}
+}
+
+/// Server response: HTTP `status_code` plus the `data` payload, matching the
+/// backend envelope `{ "status_code": <int>, "data": {...} }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerResponse {
+	pub status_code: i32,
+	pub data: JkvValue,
+}
+
+/// Split the `{ status_code, data }` envelope into a [`ServerResponse`].
+/// A payload without `status_code` is treated as a bare 200 response.
+fn into_server_response(value: JkvValue, success_codes: &[i32]) -> Result<ServerResponse, Error> {
+	let status_code = match value.get_key("status_code") {
+		Some(JkvValue::Int(v)) => *v,
+		_ => {
+			return Ok(ServerResponse { status_code: 200, data: value });
+		}
+	};
+
+	if !success_codes.contains(&status_code) {
+		return Err(Error {
+			code: status_code,
+			message: format!("server request failed with status {}", status_code),
+		});
+	}
+
+	let data = match value {
+		JkvValue::Collection(entries) => entries
+			.into_iter()
+			.rev()
+			.find_map(|(k, v)| matches!(&k, jkv::JkvKey::String(s) if s == "data").then_some(v))
+			.unwrap_or(JkvValue::Collection(alloc::vec::Vec::new())),
+		_ => JkvValue::Collection(alloc::vec::Vec::new()),
+	};
+
+	Ok(ServerResponse { status_code, data })
 }
 
 /* Accessed on Rust workq context (subscribe/unsubscribe from app task, send from scheduled workq task). */
@@ -333,12 +375,12 @@ unsafe extern "C" fn cb_lock_statuses(error: *const jb_error_t, data: *const u8,
 }
 
 /// Sends a server request asynchronously.
-pub async fn server_request(body: JkvValue) -> Result<JkvValue, Error> {
+pub async fn server_request(body: JkvValue) -> Result<ServerResponse, Error> {
 	server_request_ex(body, ServerRequestParams::default()).await
 }
 
 /// Sends a server request asynchronously with explicit parameters.
-pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<JkvValue, Error> {
+pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
 	let encoded_body = jkv::encode_with_header(&body).map_err(|encode_err| Error {
 		code: -22,
 		message: format!("failed to encode server_request body as JKV: {}", encode_err),
@@ -356,7 +398,8 @@ pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> R
 			Box::into_raw(Box::new(sender)) as *mut _,
 		);
 	}
-	receiver.await.unwrap()
+	let value = receiver.await.unwrap()?;
+	into_server_response(value, params.success_codes)
 }
 
 unsafe extern "C" fn cb_server_request(error: *const jb_error_t, data: *const u8, size: usize, user_data: *mut core::ffi::c_void) {
@@ -448,7 +491,23 @@ pub async fn barcode_scanner_stop() -> Result<(), Error> {
 }
 
 /// Sends POLL_CMD_SLEEP to mainboard asynchronously.
+///
+/// Turns the backlight off before requesting sleep and soft-kills the running
+/// app immediately after handing the request to the C bus layer. The shutdown
+/// must NOT wait for the ack: the mainboard's sleep handler releases the
+/// screen power reference and may stop polling (or cut power) before the
+/// response is delivered, which would leave the app running with its timers
+/// (e.g. the idle tick loop) alive. The RPC delivery itself is owned by the
+/// C poll machinery and is unaffected by the Rust teardown; a late ack is
+/// dropped by the generation gate together with this task.
 pub async fn sleep() -> Result<(), Error> {
+	unsafe extern "C" {
+		fn screen_backlight_set(percent: u8);
+		fn rust_workq_request_shutdown();
+	}
+
+	unsafe { screen_backlight_set(0) };
+
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
 	unsafe {
 		poll_cmd_sleep(
@@ -457,7 +516,13 @@ pub async fn sleep() -> Result<(), Error> {
 			Box::into_raw(Box::new(sender)) as *mut _,
 		);
 	}
-	receiver.await.unwrap()
+
+	unsafe { rust_workq_request_shutdown() };
+
+	// The queued shutdown cancels this task at its next suspension point, so
+	// this await normally never resolves — it only completes if the ack wins
+	// the race against the shutdown task.
+	receiver.await.unwrap_or(Ok(()))
 }
 
 /// Subscribe to scanned barcode events.

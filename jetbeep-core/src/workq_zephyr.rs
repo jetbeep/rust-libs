@@ -52,7 +52,25 @@ pub fn fn_mut_from_fn_once<A, R>(fn_once: impl FnOnce(A) -> R) -> impl FnMut(A) 
 fn restart_internal<F: FnOnce(TaskId)>(workq_type: WorkQType, task_id: TaskId, timeout: Duration, result_cb: F) -> TaskId {
     unsafe {
         let mut id = task_id;
-        let closure = fn_mut_from_fn_once(result_cb);        
+        // Main-workq closures are tagged with the app generation at submission
+        // time and silently dropped when stale, so completions belonging to a
+        // soft-killed app never run. Executor tasks of the old generation are
+        // cancelled before stale closures are dropped (see executor::cancel_stale),
+        // which makes dropping closures that own oneshot senders safe: the wake
+        // triggered by the sender drop hits an already-completed task.
+        let gate = match workq_type {
+            WorkQType::Rust => Some(crate::generation::current()),
+            WorkQType::Background => None,
+        };
+        let gated_cb = move |task_id: TaskId| {
+            if let Some(gen) = gate {
+                if gen != crate::generation::current() {
+                    return;
+                }
+            }
+            result_cb(task_id);
+        };
+        let closure = fn_mut_from_fn_once(gated_cb);
         let callback = get_callback(&closure);
         let boxed_closure = Box::new(closure);
         rust_workq_restart(

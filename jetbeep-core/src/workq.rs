@@ -106,6 +106,15 @@ pub fn restart<F: FnOnce(TaskId) + 'static>(
     timeout: Duration,
     result_cb: F,
 ) -> TaskId {
+    // Tag main-workq closures with the app generation so work belonging to a
+    // soft-killed app is silently dropped (mirrors workq_zephyr.rs).
+    let gen = crate::generation::current();
+    let result_cb = move |id: TaskId| {
+        if gen != crate::generation::current() {
+            return;
+        }
+        result_cb(id);
+    };
     // `try_with` is critical during process/thread teardown: dropping pending
     // queue entries can run callback destructors that attempt to reschedule
     // work. At that point TLS may already be in destruction and `with(...)`

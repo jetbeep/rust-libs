@@ -12,7 +12,7 @@ extern int errno;
 #include <zephyr-libs/error/error.h>
 #include <zephyr-libs/unix_time/unix_time.h>
 #include <zephyr-libs/bus_common/poll_api/poll_api.h>
-#include <application/i2c_jb_bus/i2c_jb_bus.h>
+#include <app/i2c_jb_bus/i2c_jb_bus.h>
 
 // C shims implemented in app/src/rust-bridge/fs.c
 void fs_file_t_init_shim(struct fs_file_t *file);

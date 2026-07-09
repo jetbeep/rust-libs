@@ -47,6 +47,8 @@ pub mod bus;
 
 pub mod error;
 
+pub mod generation;
+
 #[cfg(feature = "platform-desktop")]
 pub mod executor;
 

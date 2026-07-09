@@ -2,8 +2,55 @@ use std::boxed::Box;
 use std::future::Future;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+// Registry of live tasks on the UI thread, used to cancel tasks belonging to
+// a soft-killed app generation (mirrors executor_zephyr.rs).
+thread_local! {
+    static REGISTRY: RefCell<Vec<NonNull<Task>>> = RefCell::new(Vec::new());
+}
+
+fn registry_push(task_ptr: NonNull<Task>) {
+    let _ = REGISTRY.try_with(|r| r.borrow_mut().push(task_ptr));
+}
+
+fn registry_remove(task_ptr: NonNull<Task>) {
+    let _ = REGISTRY.try_with(|r| {
+        let mut vec = r.borrow_mut();
+        if let Some(pos) = vec.iter().position(|p| *p == task_ptr) {
+            vec.swap_remove(pos);
+        }
+    });
+}
+
+/// Cancel every task that does not belong to the current app generation.
+/// See executor_zephyr.rs for the full contract.
+pub fn cancel_stale() {
+    let current = crate::generation::current();
+    let stale: Vec<NonNull<Task>> = REGISTRY
+        .try_with(|r| {
+            let mut vec = r.borrow_mut();
+            let mut stale = Vec::new();
+            let mut i = 0;
+            while i < vec.len() {
+                let task_ptr = vec[i];
+                if unsafe { task_ptr.as_ref().generation != current } {
+                    vec.swap_remove(i);
+                    stale.push(task_ptr);
+                } else {
+                    i += 1;
+                }
+            }
+            stale
+        })
+        .unwrap_or_default();
+
+    for task_ptr in stale {
+        unsafe { task_ptr.as_ref().completed.set(true) };
+        Task::dec_ref(task_ptr);
+    }
+}
 
 /// Non-blocking single-thread executor (same as Zephyr version, but using std).
 pub fn run<F>(future: F)
@@ -12,6 +59,8 @@ where
 {
     let task = Box::new(Task::new(Box::pin(future)));
     let task_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(task)) };
+
+    registry_push(task_ptr);
 
     unsafe {
         Task::poll(task_ptr);
@@ -22,6 +71,7 @@ struct Task {
     future: Pin<Box<dyn Future<Output = ()> + 'static>>,
     ref_count: Cell<usize>,
     completed: Cell<bool>,
+    generation: u32,
 }
 
 impl Task {
@@ -30,6 +80,7 @@ impl Task {
             future,
             ref_count: Cell::new(1),
             completed: Cell::new(false),
+            generation: crate::generation::current(),
         }
     }
 
@@ -47,6 +98,7 @@ impl Task {
 
         if poll == Poll::Ready(()) {
             unsafe { (*task).completed.set(true) };
+            registry_remove(task_ptr);
             Task::dec_ref(task_ptr);
         }
     }
