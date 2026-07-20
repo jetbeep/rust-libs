@@ -175,6 +175,13 @@ pub trait Widget: Sized {
         unsafe { c_bindings::lv_obj_get_height(self.lv_obj().raw()) }
     }
 
+    /// Force an immediate layout recalculation so sizes/positions are valid
+    /// before the next render (e.g. before reading `get_width`/`get_height`).
+    fn update_layout(&self) -> &Self {
+        unsafe { c_bindings::lv_obj_update_layout(self.lv_obj().raw()) };
+        self
+    }
+
     /// Returns the child object at `idx` or `None` if out of range.
     #[must_use]
     fn child(&self, idx: i32) -> Option<LvObj> {
@@ -1169,6 +1176,39 @@ mod tests {
             )),
             "expected ObjClean for this object, got: {:?}",
             calls
+        );
+    }
+
+    #[test]
+    fn delete_skips_already_deleted_obj_pointer() {
+        let p = parent();
+        let obj = Obj::new(&p);
+        let raw = obj.lv_obj().raw();
+
+        spy_drain();
+        obj.delete();
+        let first = spy_drain();
+        assert_eq!(
+            first
+                .iter()
+                .filter(|c| matches!(c, LvCall::ObjDelete { .. }))
+                .count(),
+            1,
+            "expected first delete to call lv_obj_delete exactly once, got: {:?}",
+            first
+        );
+
+        let stale = unsafe { Obj::from_raw(raw) };
+        stale.delete();
+        let second = spy_drain();
+        assert_eq!(
+            second
+                .iter()
+                .filter(|c| matches!(c, LvCall::ObjDelete { .. }))
+                .count(),
+            0,
+            "expected stale delete to be ignored, got: {:?}",
+            second
         );
     }
 }

@@ -1,0 +1,19 @@
+name: Zephyr bindgen check
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  lvgl-93-bindgen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bindgen system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang libclang-dev
+
+      - name: Check production bindgen path against LVGL 9.3
+        run: bash scripts/check_lvgl_93_bindgen.sh

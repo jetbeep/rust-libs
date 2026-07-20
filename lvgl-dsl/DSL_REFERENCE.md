@@ -904,7 +904,9 @@ let mut sb = unsafe {
 `SearchBar::build` is `unsafe` because it stores raw pointers into LVGL
 objects that the caller must keep alive (the `parent` and any keyboard
 later attached). The returned `SearchBar` owns and destroys all of its own
-children when dropped, including the debounce timer.
+children when dropped, including the debounce timer. Drop also cancels pending
+deferred scroll-end work and clears the textarea `user_data` before deleting
+the root LVGL subtree.
 
 **Configuration (`SearchBarConfig`)**
 
@@ -948,7 +950,7 @@ children when dropped, including the debounce timer.
 | `set_row_renderer(f)` | Installs a custom row renderer `FnMut(*mut lv_obj_t, &SearchRow, &str, bool)` and re-renders current rows. |
 | `attach_keyboard(kb_ptr)` / `detach_keyboard()` | Bind/unbind an LVGL keyboard so its key presses route to the SearchBar's textarea. |
 | `stale_drop_count()` | Cumulative counter of replies rejected by the acceptance gate. Useful as a telemetry signal. |
-| `unsafe install_card_click(card, f)` | Free helper that attaches an LVGL clicked handler to a custom row/card object and marks it clickable. |
+| `unsafe install_card_click(card, f)` | Free helper that attaches an LVGL clicked handler to a custom row/card object, marks it clickable, and frees the boxed handler when LVGL deletes the card. |
 
 **Two-condition acceptance gate**
 
