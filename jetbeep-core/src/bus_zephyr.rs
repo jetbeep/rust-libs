@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
-use core::ffi::{c_char, CStr};
+use core::ffi::{c_char, c_int, CStr};
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use futures::channel::oneshot;
@@ -380,7 +380,26 @@ pub async fn server_request(body: JkvValue) -> Result<ServerResponse, Error> {
 }
 
 /// Sends a server request asynchronously with explicit parameters.
+///
+/// Any failure (encode error, bus/transport error, bad payload, non-success
+/// HTTP status) is also published to the journal as a server error event.
 pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
+	let result = server_request_impl(body, params).await;
+	if let Err(err) = &result {
+		journal_publish_server_error(err);
+	}
+	result
+}
+
+/// Publishes a failed server request to the journal (EVENT_SERVER, level ERROR).
+fn journal_publish_server_error(err: &Error) {
+	let message = err.message.as_bytes();
+	unsafe {
+		rust_journal_publish_server_error(err.code, message.as_ptr(), message.len());
+	}
+}
+
+async fn server_request_impl(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
 	let encoded_body = jkv::encode_with_header(&body).map_err(|encode_err| Error {
 		code: -22,
 		message: format!("failed to encode server_request body as JKV: {}", encode_err),
@@ -403,6 +422,15 @@ pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> R
 }
 
 unsafe extern "C" fn cb_server_request(error: *const jb_error_t, data: *const u8, size: usize, user_data: *mut core::ffi::c_void) {
+	/// Max accepted decompressed body size; must match SERVER_REQUEST_MAX_RAW_SIZE
+	/// in nrf-locker's screen_bus server_request poll handler.
+	const SERVER_REQUEST_MAX_RAW_SIZE: usize = 16384;
+
+	unsafe extern "C" {
+		/// LZ4 block decompression (linked in via LVGL's bundled lz4).
+		fn LZ4_decompress_safe(source: *const c_char, dest: *mut c_char, compressed_size: c_int, max_decompressed_size: c_int) -> c_int;
+	}
+
 	let sender = unsafe { Box::from_raw(user_data as *mut oneshot::Sender<Result<JkvValue, Error>>) };
     let error = error::from_jb_error(error);
 	let payload = if error.code == 0 {
@@ -435,7 +463,43 @@ unsafe extern "C" fn cb_server_request(error: *const jb_error_t, data: *const u8
 						return;
 					}
 
-					match jkv::decode_with_header(response.body.as_slice()) {
+					let decompressed;
+					let body: &[u8] = if response.compressed {
+						let raw_size = response.uncompressed_size;
+						if raw_size <= 0 || raw_size as usize > SERVER_REQUEST_MAX_RAW_SIZE {
+							sender
+								.send(Err(Error {
+									code: -22,
+									message: format!("invalid server_request uncompressed_size: {}", raw_size),
+								}))
+								.ok();
+							return;
+						}
+						let mut buf = alloc::vec![0u8; raw_size as usize];
+						let ret = unsafe {
+							LZ4_decompress_safe(
+								response.body.as_ptr() as *const c_char,
+								buf.as_mut_ptr() as *mut c_char,
+								response.body.len() as c_int,
+								raw_size as c_int,
+							)
+						};
+						if ret != raw_size as c_int {
+							sender
+								.send(Err(Error {
+									code: -22,
+									message: format!("failed to lz4-decompress server_request body: ret={} expected={}", ret, raw_size),
+								}))
+								.ok();
+							return;
+						}
+						decompressed = buf;
+						decompressed.as_slice()
+					} else {
+						response.body.as_slice()
+					};
+
+					match jkv::decode_with_header(body) {
 						Ok(value) => {
 							sender.send(Ok(value)).ok();
 						}
