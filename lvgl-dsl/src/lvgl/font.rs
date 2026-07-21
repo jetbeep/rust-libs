@@ -6,6 +6,7 @@ pub struct Font {
 }
 
 impl Font {
+    #[cfg(lv_font_montserrat_48)]
     pub const fn montserrat_48() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_48` is a static LVGL font symbol — never dangling.
@@ -13,6 +14,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_40)]
     pub const fn montserrat_40() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_40` is a static LVGL font symbol — never dangling.
@@ -20,6 +22,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_32)]
     pub const fn montserrat_32() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_32` is a static LVGL font symbol — never dangling.
@@ -27,6 +30,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_30)]
     pub const fn montserrat_30() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_30` is a static LVGL font symbol — never dangling.
@@ -34,6 +38,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_24)]
     pub const fn montserrat_24() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_24` is a static LVGL font symbol — never dangling.
@@ -41,6 +46,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_20)]
     pub const fn montserrat_20() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_20` is a static LVGL font symbol — never dangling.
@@ -48,6 +54,7 @@ impl Font {
         }
     }
 
+    #[cfg(lv_font_montserrat_14)]
     pub const fn montserrat_14() -> Font {
         Font {
             // SAFETY: `lv_font_montserrat_14` is a static LVGL font symbol — never dangling.

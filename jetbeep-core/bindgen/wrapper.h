@@ -18,4 +18,7 @@ extern int errno;
 void fs_file_t_init_shim(struct fs_file_t *file);
 void fs_dir_t_init_shim(struct fs_dir_t *dir);
 
+// C shim implemented in app/src/rust-bridge/journal.c
+void rust_journal_publish_server_error(int32_t error_code, const uint8_t *message, size_t message_size);
+
 #endif

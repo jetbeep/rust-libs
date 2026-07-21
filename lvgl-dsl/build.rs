@@ -7,11 +7,19 @@ use bindgen::Builder;
 #[path = "build/lvgl_allowlists.rs"]
 mod lvgl_allowlists;
 
+/// Built-in Montserrat sizes that `Font::montserrat_<N>()` can expose. Which
+/// ones actually exist is a Kconfig choice (`CONFIG_LV_FONT_MONTSERRAT_<N>`),
+/// so the accessors are cfg-gated per size (`cfg(lv_font_montserrat_<N>)`).
+const MONTSERRAT_SIZES: &[u32] = &[14, 20, 24, 30, 32, 40, 48];
+
 fn main() {
     // Declare the custom cfgs so rustc does not warn about unknown cfgs.
     println!("cargo:rustc-check-cfg=cfg(no_zephyr)");
     println!("cargo:rustc-check-cfg=cfg(desktop_sim)");
     println!("cargo:rustc-check-cfg=cfg(gen_style_props)");
+    for size in MONTSERRAT_SIZES {
+        println!("cargo:rustc-check-cfg=cfg(lv_font_montserrat_{size})");
+    }
 
     // Allow `cargo test` / rust-analyzer / dependency builds to work without
     // a Zephyr toolchain.  When ZEPHYR_BASE is absent we:
@@ -21,6 +29,12 @@ fn main() {
     //   2b. Otherwise write an empty bindings stub and activate the mock layer.
     if env::var("ZEPHYR_BASE").is_err() {
         println!("cargo:rustc-cfg=no_zephyr");
+        // Desktop sim / tests / rust-analyzer: every Montserrat size is
+        // available (the sim's lv_conf.h enables them all; the mock layer
+        // stubs them).
+        for size in MONTSERRAT_SIZES {
+            println!("cargo:rustc-cfg=lv_font_montserrat_{size}");
+        }
         let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set");
         fs::write(Path::new(&out_dir).join("bindings.rs"), b"")
             .expect("failed to write empty bindings stub");
@@ -37,7 +51,30 @@ fn main() {
         return;
     }
 
+    emit_montserrat_cfgs();
     generate_bindings();
+}
+
+/// Zephyr build: read the generated `autoconf.h` and emit
+/// `cfg(lv_font_montserrat_<N>)` for every `CONFIG_LV_FONT_MONTSERRAT_<N> 1`,
+/// so `Font::montserrat_<N>()` only exists when the font is compiled in.
+fn emit_montserrat_cfgs() {
+    let gen_dir = env::var("BINARY_DIR_INCLUDE_GENERATED")
+        .expect("BINARY_DIR_INCLUDE_GENERATED must be set for Zephyr builds");
+    // Depending on the Zephyr version the env var points at either
+    // `.../include/generated` or `.../include/generated/zephyr`.
+    let text = [
+        format!("{gen_dir}/autoconf.h"),
+        format!("{gen_dir}/zephyr/autoconf.h"),
+    ]
+    .iter()
+    .find_map(|p| fs::read_to_string(p).ok())
+    .unwrap_or_else(|| panic!("autoconf.h not found under {gen_dir}"));
+    for size in MONTSERRAT_SIZES {
+        if text.contains(&format!("#define CONFIG_LV_FONT_MONTSERRAT_{size} 1")) {
+            println!("cargo:rustc-cfg=lv_font_montserrat_{size}");
+        }
+    }
 }
 
 /// Desktop-sim ABI guard: compile `build/abi_probe.c` against the real LVGL

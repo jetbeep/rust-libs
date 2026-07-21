@@ -35,6 +35,9 @@ pub mod fs;
 /// File-backed JKV read/write helpers (platform-agnostic; built on `fs` + `jkv`).
 pub mod jkv_file;
 
+/// Cross-platform app launch requests (e.g. enter the service menu).
+pub mod app_launcher;
+
 #[cfg(feature = "platform-desktop")]
 pub mod bus;
 
