@@ -21,6 +21,12 @@ _Static_assert(LV_EVENT_DELETE == 41, "LV_EVENT_DELETE drifted from v9.3 value 4
 /* Rust declares lv_anim_t as an opaque [u8; 256]. */
 _Static_assert(sizeof(lv_anim_t) <= 256, "lv_anim_t grew past the 256-byte Rust mirror");
 
+/* Color-format ids used by the QR I1 -> RGB565 direct-draw conversion
+ * (src/lvgl/qrcode.rs). RGB565 must be non-indexed so the SW renderer draws it
+ * straight from the buffer without an evictable image-cache entry. */
+_Static_assert(LV_COLOR_FORMAT_RGB565 == 0x12, "LV_COLOR_FORMAT_RGB565 drifted from v9.3 value 0x12");
+_Static_assert(LV_COLOR_FORMAT_I1 == 0x07, "LV_COLOR_FORMAT_I1 drifted from v9.3 value 0x07");
+
 /* StaticStyle mirrors the LV_USE_ASSERT_STYLE == 0 layout of lv_style_t:
  * { void *values_and_props; uint32_t has_group; uint8_t prop_cnt; }. */
 _Static_assert(LV_USE_ASSERT_STYLE == 0,

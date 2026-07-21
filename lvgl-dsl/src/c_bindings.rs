@@ -98,6 +98,11 @@ mod desktop {
     }
 
     #[repr(C)]
+    pub struct lv_draw_buf_t {
+        _opaque: [u8; 0],
+    }
+
+    #[repr(C)]
     pub struct lv_draw_dsc_base_t {
         pub obj: *mut lv_obj_t,
         pub part: u32,
@@ -183,6 +188,10 @@ mod desktop {
 
     /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
     pub const LV_RESULT_OK: u32 = 1;
+
+    /// `LV_COLOR_FORMAT_RGB565` value (v9.3.0 src/misc/lv_color.h). Verified
+    /// against the real header by the ABI probe (build/abi_probe.c).
+    pub const LV_COLOR_FORMAT_RGB565: u32 = 0x12;
 
     unsafe extern "C" {
         pub static lv_font_montserrat_48: lv_font_t;
@@ -455,6 +464,22 @@ mod desktop {
             data_len: u32,
         ) -> u32;
 
+        // Canvas / draw buffer (for QR I1 -> RGB565 direct-draw conversion)
+        pub fn lv_canvas_get_draw_buf(obj: *mut lv_obj_t) -> *mut lv_draw_buf_t;
+        pub fn lv_canvas_set_draw_buf(obj: *mut lv_obj_t, draw_buf: *mut lv_draw_buf_t);
+        pub fn lv_draw_buf_create(
+            w: u32,
+            h: u32,
+            cf: u32,
+            stride: u32,
+        ) -> *mut lv_draw_buf_t;
+        pub fn lv_draw_buf_destroy(draw_buf: *mut lv_draw_buf_t);
+        pub fn lv_draw_buf_goto_xy(
+            buf: *const lv_draw_buf_t,
+            x: u32,
+            y: u32,
+        ) -> *mut core::ffi::c_void;
+
         // Delete
         pub fn lv_obj_delete(obj: *mut lv_obj_t);
 
@@ -677,6 +702,7 @@ mod mock {
     pub struct lv_theme_t;
     pub struct lv_indev_t;
     pub struct lv_draw_task_t;
+    pub struct lv_draw_buf_t;
     #[repr(C)]
     pub struct lv_draw_dsc_base_t {
         pub obj: *mut lv_obj_t,
@@ -2495,6 +2521,9 @@ mod mock {
     /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
     pub const LV_RESULT_OK: u32 = 1;
 
+    /// `LV_COLOR_FORMAT_RGB565` value (v9.3.0). Mock mirror of the desktop const.
+    pub const LV_COLOR_FORMAT_RGB565: u32 = 0x12;
+
     pub unsafe fn lv_qrcode_create(parent: *mut lv_obj_t) -> *mut lv_obj_t {
         let obj = alloc_fake_obj();
         register_child(parent, obj);
@@ -2540,6 +2569,30 @@ mod mock {
             })
         });
         LV_RESULT_OK
+    }
+
+    // Canvas / draw buffer (mock no-ops). The QR I1 -> RGB565 conversion in
+    // `QrCode::to_rgb565_direct` bails out early when `lv_canvas_get_draw_buf`
+    // returns null, so these are never exercised past the first call.
+    pub unsafe fn lv_canvas_get_draw_buf(_obj: *mut lv_obj_t) -> *mut lv_draw_buf_t {
+        core::ptr::null_mut()
+    }
+    pub unsafe fn lv_canvas_set_draw_buf(_obj: *mut lv_obj_t, _draw_buf: *mut lv_draw_buf_t) {}
+    pub unsafe fn lv_draw_buf_create(
+        _w: u32,
+        _h: u32,
+        _cf: u32,
+        _stride: u32,
+    ) -> *mut lv_draw_buf_t {
+        core::ptr::null_mut()
+    }
+    pub unsafe fn lv_draw_buf_destroy(_draw_buf: *mut lv_draw_buf_t) {}
+    pub unsafe fn lv_draw_buf_goto_xy(
+        _buf: *const lv_draw_buf_t,
+        _x: u32,
+        _y: u32,
+    ) -> *mut core::ffi::c_void {
+        core::ptr::null_mut()
     }
 
     // ---------------------------------------------------------
