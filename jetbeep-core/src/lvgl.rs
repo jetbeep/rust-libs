@@ -112,6 +112,7 @@ mod ffi {
         // Widgets — textarea
         pub fn lv_textarea_create(parent: *mut lv_obj_t) -> *mut lv_obj_t;
         pub fn lv_textarea_set_text(obj: *mut lv_obj_t, txt: *const c_char);
+        pub fn lv_textarea_add_text(obj: *mut lv_obj_t, txt: *const c_char);
         pub fn lv_textarea_get_text(obj: *const lv_obj_t) -> *const c_char;
         pub fn lv_textarea_set_placeholder_text(obj: *mut lv_obj_t, txt: *const c_char);
         pub fn lv_textarea_set_one_line(obj: *mut lv_obj_t, en: bool);
@@ -145,6 +146,7 @@ mod ffi {
         pub fn lv_group_create() -> *mut lv_group_t;
         pub fn lv_group_add_obj(group: *mut lv_group_t, obj: *mut lv_obj_t);
         pub fn lv_group_set_default(group: *mut lv_group_t);
+        pub fn lv_group_focus_obj(obj: *mut lv_obj_t);
 
         // Fonts
         pub static lv_font_montserrat_14: lv_font_t;
@@ -303,6 +305,29 @@ struct SdlDisplayMode {
 
 unsafe extern "C" {
     fn SDL_GetDesktopDisplayMode(display_index: i32, mode: *mut SdlDisplayMode) -> i32;
+    fn SDL_GetClipboardText() -> *mut c_char;
+    fn SDL_SetClipboardText(text: *const c_char) -> i32;
+    fn SDL_free(mem: *mut c_void);
+}
+
+/// Read the OS clipboard as a UTF-8 string (empty if unavailable).
+pub fn sdl_get_clipboard_text() -> String {
+    let ptr = unsafe { SDL_GetClipboardText() };
+    if ptr.is_null() {
+        return String::new();
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { SDL_free(ptr as *mut c_void) };
+    s
+}
+
+/// Write a string to the OS clipboard.
+pub fn sdl_set_clipboard_text(text: &str) {
+    if let Ok(c_str) = std::ffi::CString::new(text) {
+        unsafe { SDL_SetClipboardText(c_str.as_ptr()) };
+    }
 }
 
 /// Return the desktop resolution of display 0, or `None` if SDL can't
@@ -367,6 +392,20 @@ pub struct LvGroup {
     group: *mut lv_group_t,
 }
 
+impl LvGroup {
+    /// Borrow the raw group pointer (e.g. to stash it and rebuild a handle
+    /// later via [`LvGroup::from_raw`]).
+    pub fn raw(&self) -> *mut lv_group_t {
+        self.group
+    }
+
+    /// Wrap an existing raw group pointer. The caller must ensure the group
+    /// outlives the returned handle; `LvGroup` does not own/free the group.
+    pub fn from_raw(group: *mut lv_group_t) -> LvGroup {
+        LvGroup { group }
+    }
+}
+
 pub fn lv_group_create() -> LvGroup {
     let group = unsafe { ffi::lv_group_create() };
     if group.is_null() {
@@ -381,6 +420,11 @@ pub fn lv_group_add_obj(group: &LvGroup, obj: &LvObj) {
 
 pub fn lv_group_set_default(group: &LvGroup) {
     unsafe { ffi::lv_group_set_default(group.group) }
+}
+
+/// Focus `obj` within its group so keyboard input is routed to it.
+pub fn lv_group_focus_obj(obj: &LvObj) {
+    unsafe { ffi::lv_group_focus_obj(obj.obj) }
 }
 
 // ── Object basics ──
@@ -535,6 +579,11 @@ pub fn lv_textarea_create(parent: &LvObj) -> LvObj {
 pub fn lv_textarea_set_text(obj: &LvObj, text: &str) {
     let c_str = to_null_terminated(text);
     unsafe { ffi::lv_textarea_set_text(obj.obj, c_str.as_ptr() as *const c_char) }
+}
+
+pub fn lv_textarea_add_text(obj: &LvObj, text: &str) {
+    let c_str = to_null_terminated(text);
+    unsafe { ffi::lv_textarea_add_text(obj.obj, c_str.as_ptr() as *const c_char) }
 }
 
 pub fn lv_textarea_get_text(obj: &LvObj) -> String {

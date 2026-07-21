@@ -94,8 +94,38 @@ pub fn init(_fs_root: Option<&str>) {
 
 #[cfg(feature = "simulator")]
 pub fn init_simulator(config_path: &str, layout_override: Option<&str>) {
-    bus::set_simulator_config_path(config_path);
+    let device_settings_path = resolve_device_settings_path(config_path);
+    if device_settings_path != config_path {
+        log::info!(
+            "simulator: device settings (user_params) sourced from {}",
+            device_settings_path
+        );
+    }
+    bus::set_simulator_config_path(&device_settings_path);
     simulator::init(config_path, layout_override);
+}
+
+/// Pick the file that provides `device_settings.user_settings.user_params`.
+///
+/// The layout catalog and the device settings can come from different places:
+/// when `--simulator-config` points at a layouts **directory** (multi-layout
+/// catalog), that directory carries no device settings, so we fall back to a
+/// sibling `simulator_config.json` next to the directory (e.g.
+/// `apps/<app>/simulator_config.json`). This lets layout switching and live
+/// `user_params` editing coexist. When `--simulator-config` is a single file,
+/// that same file provides the device settings (legacy behaviour).
+#[cfg(feature = "simulator")]
+fn resolve_device_settings_path(config_path: &str) -> String {
+    let path = std::path::Path::new(config_path);
+    if path.is_dir() {
+        if let Some(parent) = path.parent() {
+            let sibling = parent.join("simulator_config.json");
+            if sibling.is_file() {
+                return sibling.to_string_lossy().into_owned();
+            }
+        }
+    }
+    config_path.to_string()
 }
 
 #[cfg(feature = "platform-desktop")]

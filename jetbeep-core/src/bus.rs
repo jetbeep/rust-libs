@@ -318,6 +318,13 @@ pub fn set_simulator_config_path(config_path: &str) {
     }
 }
 
+/// The active simulator config path, if one has been set via
+/// [`set_simulator_config_path`]. Used by the live `user_params` editor.
+#[cfg(feature = "simulator")]
+pub fn simulator_config_path() -> Option<String> {
+    SIMULATOR_CONFIG_PATH.read().ok().and_then(|guard| guard.clone())
+}
+
 #[cfg(feature = "simulator")]
 fn read_device_settings_from_config(config_path: &str) -> Result<DeviceSettings, Error> {
     let path = Path::new(config_path);
