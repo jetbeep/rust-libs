@@ -31,13 +31,25 @@ struct SimulatorUi {
     lockers_panel: *mut lv_obj_t,
     ctrl_panel: *mut lv_obj_t,
     sim_disp: *mut lv_display_t,
+    group: LvGroup,
+    win_w: i32,
+    win_h: i32,
     #[allow(dead_code)]
     layout_dropdown: Option<*mut lv_obj_t>,
+}
+
+/// UI object references for the live `user_params` editor modal, present only
+/// while the modal is open.
+struct ModalUi {
+    root: *mut lv_obj_t,
+    textarea: *mut lv_obj_t,
+    error: *mut lv_obj_t,
 }
 
 // Store UI refs in thread-local for refresh callbacks
 std::thread_local! {
     static UI: std::cell::RefCell<Option<SimulatorUi>> = const { std::cell::RefCell::new(None) };
+    static MODAL: std::cell::RefCell<Option<ModalUi>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Pixel scale factor: config dimensions (cm-ish) → pixels
@@ -139,6 +151,8 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     create_keypad(&ctrl_panel);
     let (barcode_input, scan_btn) = create_barcode_scanner(&ctrl_panel);
     lv_group_add_obj(&group, &barcode_input);
+    // Floating gear button, pinned to the top-right corner of the screen.
+    create_settings_button(&screen);
 
     let sim_disp_ptr = sim_disp.disp;
     UI.with(|ui| {
@@ -151,6 +165,9 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
             lockers_panel: lockers_panel.obj,
             ctrl_panel: ctrl_panel.obj,
             sim_disp: sim_disp_ptr,
+            group,
+            win_w,
+            win_h,
             layout_dropdown,
         });
     });
@@ -825,6 +842,266 @@ unsafe extern "C" fn scan_click_cb(e: *mut lv_event_t) {
     lv_textarea_set_text(&ta, "");
 
     std::mem::forget(ta); // don't drop — LVGL owns it
+}
+
+// ── Live user_params editor ──
+
+/// FontAwesome gear glyph bundled with the Montserrat symbol range
+/// (`LV_SYMBOL_SETTINGS`).
+const SYMBOL_SETTINGS: &str = "\u{F013}";
+
+/// Add a small floating gear button in the top-right corner that opens the live
+/// `user_params` JSON editor modal. Right-aligned to the screen so it stays
+/// pinned to the corner even when the window is resized on layout switches.
+fn create_settings_button(screen: &LvObj) {
+    let btn = lv_button_create(screen);
+    lv_obj_set_size(&btn, 30, 30);
+    lv_obj_align(&btn, LvAlign::TopRight, -6, 6);
+    lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x455A64), 0);
+    lv_obj_set_style_radius(&btn, 15, 0);
+    lv_obj_set_style_pad_all(&btn, 0, 0);
+
+    let label = lv_label_create(&btn);
+    lv_label_set_text(&label, SYMBOL_SETTINGS);
+    lv_obj_align(&label, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&label, lv_color_hex_fn(0xFFFFFF), 0);
+
+    lv_obj_add_event_cb(&btn, settings_click_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+    std::mem::forget(label);
+    std::mem::forget(btn);
+}
+
+unsafe extern "C" fn settings_click_cb(_e: *mut lv_event_t) {
+    open_settings_modal();
+}
+
+/// Build and show the modal JSON editor, seeded with the current `user_params`.
+fn open_settings_modal() {
+    // Never stack two modals.
+    if MODAL.with(|m| m.borrow().is_some()) {
+        return;
+    }
+
+    let (screen_ptr, group_ptr, win_w, win_h) = match UI.with(|ui| {
+        ui.borrow()
+            .as_ref()
+            .map(|u| (u.sim_screen, u.group.raw(), u.win_w, u.win_h))
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let screen = LvObj { obj: screen_ptr };
+
+    // Full-screen dimmed backdrop (sized to the window so the centered panel
+    // lands in the middle of the visible screen; scrollbars removed).
+    let backdrop = lv_obj_create(&screen);
+    lv_obj_set_size(&backdrop, win_w, win_h);
+    lv_obj_set_pos(&backdrop, 0, 0);
+    lv_obj_remove_flag(&backdrop, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(&backdrop, lv_color_hex_fn(0x000000), 0);
+    lv_obj_set_style_bg_opa(&backdrop, 200, 0);
+    lv_obj_set_style_border_width(&backdrop, 0, 0);
+    lv_obj_set_style_pad_all(&backdrop, 0, 0);
+    lv_obj_set_style_radius(&backdrop, 0, 0);
+
+    // Centered editor panel, clamped to fit smaller windows.
+    let panel_w = 520.min(win_w - 20);
+    let panel_h = 470.min(win_h - 20);
+    let inner_w = panel_w - 30;
+    let ta_h = panel_h - 205;
+    let panel = lv_obj_create(&backdrop);
+    lv_obj_set_size(&panel, panel_w, panel_h);
+    lv_obj_align(&panel, LvAlign::Center, 0, 0);
+    lv_obj_remove_flag(&panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(&panel, lv_color_hex_fn(0x2B2B3D), 0);
+    lv_obj_set_style_bg_opa(&panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(&panel, 8, 0);
+    lv_obj_set_style_border_color(&panel, lv_color_hex_fn(0x555566), 0);
+    lv_obj_set_style_border_width(&panel, 1, 0);
+    lv_obj_set_style_pad_all(&panel, 15, 0);
+    lv_obj_set_style_pad_row(&panel, 10, 0);
+    lv_obj_set_flex_flow(&panel, LV_FLEX_FLOW_COLUMN);
+
+    let title = lv_label_create(&panel);
+    lv_label_set_text(&title, "Edit user_params (JSON)");
+    lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&title, &lv_font_montserrat_14(), 0);
+    std::mem::forget(title);
+
+    let ta = lv_textarea_create(&panel);
+    lv_obj_set_size(&ta, inner_w, ta_h);
+    lv_textarea_set_one_line(&ta, false);
+    lv_obj_set_style_bg_color(&ta, lv_color_hex_fn(0x3A3A4E), 0);
+    lv_obj_set_style_text_color(&ta, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_border_color(&ta, lv_color_hex_fn(0x666666), 0);
+    let seed = super::config_editor::current_user_params_json()
+        .unwrap_or_else(|| "{}".to_string());
+    lv_textarea_set_text(&ta, &seed);
+    // Route the SDL keyboard to the editor while the modal is open.
+    let group = LvGroup::from_raw(group_ptr);
+    lv_group_add_obj(&group, &ta);
+    lv_group_focus_obj(&ta);
+    std::mem::forget(group);
+
+    // Utility row: Paste / Copy / Clear.
+    let util_row = lv_obj_create(&panel);
+    lv_obj_set_width(&util_row, inner_w);
+    lv_obj_set_height(&util_row, 40);
+    lv_obj_set_style_bg_opa(&util_row, 0, 0);
+    lv_obj_set_style_border_width(&util_row, 0, 0);
+    lv_obj_set_style_pad_all(&util_row, 0, 0);
+    lv_obj_set_style_pad_column(&util_row, 8, 0);
+    lv_obj_set_flex_flow(&util_row, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(&util_row, LV_OBJ_FLAG_SCROLLABLE);
+    make_modal_button(&util_row, 100, 0x37474F, "Paste", modal_paste_cb);
+    make_modal_button(&util_row, 100, 0x37474F, "Copy", modal_copy_cb);
+    make_modal_button(&util_row, 100, 0x6D4C41, "Clear", modal_clear_cb);
+    std::mem::forget(util_row);
+
+    let err = lv_label_create(&panel);
+    lv_label_set_text(&err, "");
+    lv_obj_set_style_text_color(&err, lv_color_hex_fn(0xE57373), 0);
+    lv_obj_set_style_text_font(&err, &lv_font_montserrat_14(), 0);
+
+    let row = lv_obj_create(&panel);
+    lv_obj_set_width(&row, inner_w);
+    lv_obj_set_height(&row, 44);
+    lv_obj_set_style_bg_opa(&row, 0, 0);
+    lv_obj_set_style_border_width(&row, 0, 0);
+    lv_obj_set_style_pad_all(&row, 0, 0);
+    lv_obj_set_style_pad_column(&row, 10, 0);
+    lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(&row, LV_OBJ_FLAG_SCROLLABLE);
+
+    let save_btn = lv_button_create(&row);
+    lv_obj_set_size(&save_btn, 110, 40);
+    lv_obj_set_style_bg_color(&save_btn, lv_color_hex_fn(0x2E7D32), 0);
+    lv_obj_set_style_radius(&save_btn, 6, 0);
+    let save_lbl = lv_label_create(&save_btn);
+    lv_label_set_text(&save_lbl, "Save & apply");
+    lv_obj_align(&save_lbl, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&save_lbl, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_add_event_cb(&save_btn, modal_save_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+
+    let cancel_btn = lv_button_create(&row);
+    lv_obj_set_size(&cancel_btn, 100, 40);
+    lv_obj_set_style_bg_color(&cancel_btn, lv_color_hex_fn(0x555566), 0);
+    lv_obj_set_style_radius(&cancel_btn, 6, 0);
+    let cancel_lbl = lv_label_create(&cancel_btn);
+    lv_label_set_text(&cancel_lbl, "Cancel");
+    lv_obj_align(&cancel_lbl, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&cancel_lbl, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_add_event_cb(&cancel_btn, modal_cancel_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+
+    MODAL.with(|m| {
+        *m.borrow_mut() = Some(ModalUi {
+            root: backdrop.obj,
+            textarea: ta.obj,
+            error: err.obj,
+        });
+    });
+
+    std::mem::forget(ta);
+    std::mem::forget(err);
+    std::mem::forget(save_btn);
+    std::mem::forget(save_lbl);
+    std::mem::forget(cancel_btn);
+    std::mem::forget(cancel_lbl);
+    std::mem::forget(row);
+    std::mem::forget(panel);
+    std::mem::forget(backdrop);
+    std::mem::forget(screen);
+}
+
+unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
+    let (text, err_ptr) = match MODAL.with(|m| {
+        m.borrow().as_ref().map(|modal| {
+            let ta = LvObj { obj: modal.textarea };
+            let text = lv_textarea_get_text(&ta);
+            std::mem::forget(ta);
+            (text, modal.error)
+        })
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+
+    match super::config_editor::save_user_params_json(&text) {
+        Ok(()) => {
+            super::config_editor::trigger_profile_reload();
+            close_settings_modal();
+        }
+        Err(e) => {
+            let err_label = LvObj { obj: err_ptr };
+            lv_label_set_text(&err_label, &e);
+            std::mem::forget(err_label);
+        }
+    }
+}
+
+unsafe extern "C" fn modal_cancel_cb(_e: *mut lv_event_t) {
+    close_settings_modal();
+}
+
+/// Create a labeled button inside a modal row and wire its click callback.
+fn make_modal_button(row: &LvObj, w: i32, bg: u32, text: &str, cb: lv_event_cb_t) {
+    let btn = lv_button_create(row);
+    lv_obj_set_size(&btn, w, 40);
+    lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(bg), 0);
+    lv_obj_set_style_radius(&btn, 6, 0);
+    let lbl = lv_label_create(&btn);
+    lv_label_set_text(&lbl, text);
+    lv_obj_align(&lbl, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&lbl, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_add_event_cb(&btn, cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+    std::mem::forget(lbl);
+    std::mem::forget(btn);
+}
+
+/// Insert the OS clipboard contents into the editor at the cursor.
+unsafe extern "C" fn modal_paste_cb(_e: *mut lv_event_t) {
+    let ta_ptr = match MODAL.with(|m| m.borrow().as_ref().map(|modal| modal.textarea)) {
+        Some(p) => p,
+        None => return,
+    };
+    let clip = sdl_get_clipboard_text();
+    if clip.is_empty() {
+        return;
+    }
+    let ta = LvObj { obj: ta_ptr };
+    lv_textarea_add_text(&ta, &clip);
+    std::mem::forget(ta);
+}
+
+/// Copy the entire editor contents to the OS clipboard.
+unsafe extern "C" fn modal_copy_cb(_e: *mut lv_event_t) {
+    let ta_ptr = match MODAL.with(|m| m.borrow().as_ref().map(|modal| modal.textarea)) {
+        Some(p) => p,
+        None => return,
+    };
+    let ta = LvObj { obj: ta_ptr };
+    let text = lv_textarea_get_text(&ta);
+    std::mem::forget(ta);
+    sdl_set_clipboard_text(&text);
+}
+
+/// Clear the editor to an empty JSON object.
+unsafe extern "C" fn modal_clear_cb(_e: *mut lv_event_t) {
+    let ta_ptr = match MODAL.with(|m| m.borrow().as_ref().map(|modal| modal.textarea)) {
+        Some(p) => p,
+        None => return,
+    };
+    let ta = LvObj { obj: ta_ptr };
+    lv_textarea_set_text(&ta, "{}");
+    std::mem::forget(ta);
+}
+
+/// Delete the modal (and all its children) and clear the stored refs.
+fn close_settings_modal() {
+    if let Some(modal) = MODAL.with(|m| m.borrow_mut().take()) {
+        lv_obj_delete(LvObj { obj: modal.root });
+    }
 }
 
 /// Refresh all cell colors and scanner enabled state based on current simulator state.

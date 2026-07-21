@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_editor;
 pub mod layouts;
 pub mod state;
 pub mod ui;
