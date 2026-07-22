@@ -47,6 +47,10 @@ mod lv_shared_consts {
     pub const LV_ARC_MODE_NORMAL: u32 = 0;
     pub const LV_ARC_MODE_SYMMETRICAL: u32 = 1;
     pub const LV_ARC_MODE_REVERSE: u32 = 2;
+
+    /// `LV_COLOR_FORMAT_RGB565` value (v9.3.0 src/misc/lv_color.h). Verified
+    /// against the real header by the ABI probe (build/abi_probe.c).
+    pub const LV_COLOR_FORMAT_RGB565: u32 = 0x12;
 }
 
 // ============================================================
@@ -188,10 +192,6 @@ mod desktop {
 
     /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
     pub const LV_RESULT_OK: u32 = 1;
-
-    /// `LV_COLOR_FORMAT_RGB565` value (v9.3.0 src/misc/lv_color.h). Verified
-    /// against the real header by the ABI probe (build/abi_probe.c).
-    pub const LV_COLOR_FORMAT_RGB565: u32 = 0x12;
 
     unsafe extern "C" {
         pub static lv_font_montserrat_48: lv_font_t;
@@ -2520,9 +2520,6 @@ mod mock {
     // ---------------------------------------------------------
     /// `LV_RESULT_OK` value — matches bindgen output for LVGL C enum (1)
     pub const LV_RESULT_OK: u32 = 1;
-
-    /// `LV_COLOR_FORMAT_RGB565` value (v9.3.0). Mock mirror of the desktop const.
-    pub const LV_COLOR_FORMAT_RGB565: u32 = 0x12;
 
     pub unsafe fn lv_qrcode_create(parent: *mut lv_obj_t) -> *mut lv_obj_t {
         let obj = alloc_fake_obj();

@@ -118,7 +118,14 @@ impl QrCode {
     /// the same `dark`/`light` colors. No-op when the internal buffers are
     /// unavailable (e.g. the host test mock) or when allocating the RGB565
     /// buffer fails (the widget then keeps its original I1 buffer).
-    pub fn to_rgb565_direct(&self, size: i32, dark: Color, light: Color) {
+    ///
+    /// # Safety
+    /// `size` must equal the value passed to the most recent
+    /// [`set_size`](QrCode::set_size) + [`update`](QrCode::update) on this
+    /// widget. It bounds the raw pointer walk over the source (I1) canvas
+    /// buffer, which is exactly `size * size`; a larger `size` reads/writes
+    /// out of bounds (undefined behaviour).
+    pub unsafe fn to_rgb565_direct(&self, size: i32, dark: Color, light: Color) {
         if size <= 0 {
             return;
         }
@@ -164,8 +171,11 @@ impl QrCode {
                 let byte = unsafe { *src_row.add((x >> 3) as usize) };
                 let bit = (byte >> (7 - (x & 7))) & 1;
                 let color = if bit == 1 { dark565 } else { light565 };
-                // SAFETY: `x < size`, so `x * 2` stays inside the RGB565 row;
-                // `write_unaligned` makes no alignment assumption.
+                // Write the pixel as a native-endian `u16`, matching LVGL's
+                // own RGB565 canvas layout (`lv_color16_t`, written natively by
+                // `lv_canvas_set_px`). `write_unaligned` makes no alignment
+                // assumption on the row pointer.
+                // SAFETY: `x < size`, so `x * 2` stays inside the RGB565 row.
                 unsafe {
                     (dst_row.add((x as usize) * 2) as *mut u16).write_unaligned(color);
                 }
@@ -180,7 +190,8 @@ impl QrCode {
     }
 }
 
-/// Packs an sRGB [`Color`] into a little-endian RGB565 pixel value.
+/// Packs an sRGB [`Color`] into a native-endian RGB565 pixel value, matching
+/// LVGL's `lv_color16_t` in-RAM layout.
 fn rgb565(color: Color) -> u16 {
     let c = color.to_lv();
     ((c.red as u16 >> 3) << 11) | ((c.green as u16 >> 2) << 5) | (c.blue as u16 >> 3)
