@@ -96,8 +96,42 @@ fn parse_http_response_body<R: DeserializeOwned>(
         format!("Failed to parse response JSON: {}", e)
     })?;
 
-    if let Ok(envelope) = serde_json::from_value::<AjaxResponseData<R>>(json_value.clone()) {
-        return Ok(envelope);
+    // Detect the `{ status_code, data }` envelope by the presence of a
+    // top-level `status_code` key — consistent with `bus::into_server_response`
+    // and without cloning the whole payload. Any other JSON (including objects
+    // that lack `status_code`) is treated as a raw `R` payload carrying the
+    // transport `status_code`.
+    //
+    // Using the key as the marker (instead of a strict envelope
+    // deserialization with a raw fallback) fixes a correctness bug: an error
+    // envelope with a missing/malformed `data` (e.g. `{"status_code":500,
+    // "message":"fail"}`) previously failed the strict decode and fell back to
+    // raw parsing, dropping the application status code and letting an error
+    // response be treated as success.
+    if let serde_json::Value::Object(mut map) = json_value {
+        if let Some(status_value) = map.get("status_code") {
+            let envelope_status = status_value.as_i64().map(|v| v as i16).unwrap_or(status_code);
+            let data_value = map.remove("data").unwrap_or(serde_json::Value::Null);
+            let data = serde_json::from_value::<R>(data_value).map_err(|e| {
+                log::error!(
+                    "Failed to decode enveloped response data from socket {}: {}",
+                    socket_path,
+                    e
+                );
+                format!("Failed to decode response payload: {}", e)
+            })?;
+            return Ok(AjaxResponseData { status_code: envelope_status, data });
+        }
+
+        let data = serde_json::from_value::<R>(serde_json::Value::Object(map)).map_err(|e| {
+            log::error!(
+                "Failed to decode response body as raw payload from socket {}: {}",
+                socket_path,
+                e
+            );
+            format!("Failed to decode response payload: {}", e)
+        })?;
+        return Ok(AjaxResponseData { status_code, data });
     }
 
     let data = serde_json::from_value::<R>(json_value).map_err(|e| {
@@ -312,5 +346,20 @@ mod tests {
         .expect("explicit envelope should be parsed as-is");
         assert_eq!(parsed.status_code, 200);
         assert_eq!(parsed.data["ok"], true);
+    }
+
+    #[test]
+    fn parse_http_response_body_uses_envelope_status_when_data_missing() {
+        // An error envelope without a `data` field must surface the envelope's
+        // application status code (so the caller rejects it) instead of falling
+        // back to raw parsing and treating the error as a success payload.
+        let parsed = parse_http_response_body::<serde_json::Value>(
+            200,
+            br#"{"status_code":500,"message":"fail"}"#,
+            "/tmp/test-agent.sock",
+        )
+        .expect("error envelope with missing data should still parse");
+        assert_eq!(parsed.status_code, 500);
+        assert_eq!(parsed.data, serde_json::Value::Null);
     }
 }
