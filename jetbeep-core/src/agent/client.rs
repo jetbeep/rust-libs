@@ -74,6 +74,44 @@ pub struct AjaxResponseData<T = serde_json::Value> {
     pub data: T,
 }
 
+fn parse_http_response_body<R: DeserializeOwned>(
+    status_code: i16,
+    body: &[u8],
+    socket_path: &str,
+) -> Result<AjaxResponseData<R>, String> {
+    if body.is_empty() {
+        let data = serde_json::from_value::<R>(serde_json::Value::Null).map_err(|e| {
+            log::error!(
+                "Failed to decode empty response payload as null for socket {}: {}",
+                socket_path,
+                e
+            );
+            format!("Failed to decode empty response payload: {}", e)
+        })?;
+        return Ok(AjaxResponseData { status_code, data });
+    }
+
+    let json_value: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
+        log::error!("Failed to parse response JSON from socket {}: {}", socket_path, e);
+        format!("Failed to parse response JSON: {}", e)
+    })?;
+
+    if let Ok(envelope) = serde_json::from_value::<AjaxResponseData<R>>(json_value.clone()) {
+        return Ok(envelope);
+    }
+
+    let data = serde_json::from_value::<R>(json_value).map_err(|e| {
+        log::error!(
+            "Failed to decode response body as raw payload from socket {}: {}",
+            socket_path,
+            e
+        );
+        format!("Failed to decode response payload: {}", e)
+    })?;
+
+    Ok(AjaxResponseData { status_code, data })
+}
+
 /// Unix socket HTTP client for making requests to a specific socket
 pub struct AgentClient {
     socket_path: String,
@@ -159,10 +197,12 @@ impl AgentClient {
                         return Err(format!("Agent request error: {}", status));
                     }
 
-                    response.json::<AjaxResponseData<R>>().map_err(|e| {
-                        log::error!("Failed to parse response JSON from socket {}: {}", socket_path, e);
-                        format!("Failed to parse response JSON: {}", e)
-                    })
+                    let status_code = status.as_u16() as i16;
+                    let body = response.bytes().map_err(|e| {
+                        log::error!("Failed to read response body from socket {}: {}", socket_path, e);
+                        format!("Failed to read response body: {}", e)
+                    })?;
+                    parse_http_response_body(status_code, body.as_ref(), &socket_path)
                 })();
 
                 // Bounce the result back to the main (UI) thread so the
@@ -212,10 +252,12 @@ impl AgentClient {
                         return Err(format!("HTTP error: {}", status));
                     }
 
-                    response.json::<AjaxResponseData<R>>().map_err(|e| {
-                        log::error!("Failed to parse response JSON from socket {}: {}", socket_path, e);
-                        format!("Failed to parse response JSON: {}", e)
-                    })
+                    let status_code = status.as_u16() as i16;
+                    let body = response.bytes().map_err(|e| {
+                        log::error!("Failed to read response body from socket {}: {}", socket_path, e);
+                        format!("Failed to read response body: {}", e)
+                    })?;
+                    parse_http_response_body(status_code, body.as_ref(), &socket_path)
                 })();
 
                 // See post comment above for why this MUST be `post_to_main`
@@ -231,5 +273,44 @@ impl AgentClient {
             .await
             .map_err(|_| "Failed to receive GET response from background worker")?
             .map_err(|e| e.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_http_response_body_accepts_empty_payload_as_null_data() {
+        let parsed =
+            parse_http_response_body::<serde_json::Value>(201, b"", "/tmp/test-agent.sock")
+                .expect("empty success body should be treated as null payload");
+        assert_eq!(parsed.status_code, 201);
+        assert_eq!(parsed.data, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn parse_http_response_body_accepts_raw_json_without_envelope() {
+        let parsed = parse_http_response_body::<serde_json::Value>(
+            200,
+            br#"{"cmdId":20,"cmd":"openLock"}"#,
+            "/tmp/test-agent.sock",
+        )
+        .expect("raw JSON body should be accepted");
+        assert_eq!(parsed.status_code, 200);
+        assert_eq!(parsed.data["cmdId"], 20);
+        assert_eq!(parsed.data["cmd"], "openLock");
+    }
+
+    #[test]
+    fn parse_http_response_body_keeps_explicit_envelope() {
+        let parsed = parse_http_response_body::<serde_json::Value>(
+            201,
+            br#"{"status_code":200,"data":{"ok":true}}"#,
+            "/tmp/test-agent.sock",
+        )
+        .expect("explicit envelope should be parsed as-is");
+        assert_eq!(parsed.status_code, 200);
+        assert_eq!(parsed.data["ok"], true);
     }
 }
