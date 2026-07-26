@@ -86,7 +86,7 @@ A safe, ergonomic Rust DSL that wraps the [LVGL](https://lvgl.io/) v9 embedded g
 Import everything with the prelude:
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 ```
 
 This brings in all widgets, types, and the `Widget` trait.
@@ -94,7 +94,7 @@ This brings in all widgets, types, and the `Widget` trait.
 ### Minimal Example
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 let screen = Screen::new();
 
@@ -363,7 +363,7 @@ let matrix = ButtonMatrix::new(&parent);
 **Example**
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 static NUMPAD_MAP: &ButtonMatrixMap = &[
     ButtonMatrixMapEntry::new(c"1"),
@@ -818,7 +818,7 @@ let kb = Keyboard::new(&parent);
 **Example — full keyboard with dark theme**
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 fn on_ready(_e: Event)  { /* commit input */ }
 fn on_cancel(_e: Event) { /* dismiss keyboard */ }
@@ -846,7 +846,7 @@ screen.load();
 **Example — custom numeric map**
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 let kb = Keyboard::new(&screen)
     .full_width()
@@ -1124,7 +1124,7 @@ part-aware: the **track** (`LV_PART_MAIN`), the **indicator**
 color, width, opacity, and rounded-cap settings.
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 let arc = Arc::new(&screen);
 arc
@@ -1190,7 +1190,7 @@ label text when rows are created, so option labels do not need to be static C
 string maps.
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 let mut reasons = RadioButtonList::new(&screen, &[
     "Choose another locker",
@@ -1292,7 +1292,7 @@ or any address that lives as long as the animation does). Chain setters, then
 call `.start()`.
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 use core::ffi::c_void;
 
 let handle = Anim::new(arc.raw_ptr() as *mut c_void)
@@ -2162,7 +2162,7 @@ Each locale map has a corresponding **ctrl map** (`CTRLMAP_QWERTY_EN`, `CTRLMAP_
 **Custom map example:**
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 static MY_MAP: &KeyMap = &[
     KeyMapEntry::new(c"A"), KeyMapEntry::new(c"B"), KeyMapEntry::new(c"C"),
@@ -2248,7 +2248,7 @@ kb.theme(&MY_THEME);
 A zero-allocation, `no_std`-safe cursor that cycles through a fixed set of [`KeyboardLocale`](#keyboardlocale) values. Const-constructible and suitable for `static` storage in embedded firmware.
 
 ```rust
-use lvgl_dsl::lvgl::prelude::*;
+use lvgl_dsl::prelude::*;
 
 static LOCALES: LocaleSwitcher<3> = LocaleSwitcher::new([
     KeyboardLocale::EnUs,

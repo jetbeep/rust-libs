@@ -1,4 +1,4 @@
-//! Selection model (§5). Selection lives as a Vec<u64> of row IDs in
+//! Selection model (§5). Selection lives as a `Vec<u64>` of row IDs in
 //! InnerState.selected. We never emit `Select(_, false)` for IDs lost
 //! to `set_results`/`append_results` — those are silently reconciled.
 use super::action::{Action, Callback};

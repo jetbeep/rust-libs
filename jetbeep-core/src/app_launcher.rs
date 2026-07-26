@@ -10,8 +10,9 @@
 //!   `app_teardown() -> app_main(target)` sequence on the rust workq and
 //!   keeps the current backlight brightness.
 //! * **Desktop**: invokes a handler registered by the runner
-//!   ([`set_launch_handler`]), deferred through the workq so the app is never
-//!   torn down in the middle of an LVGL event callback.
+//!   ([`set_launch_handler`](crate::app_launcher::set_launch_handler)), deferred
+//!   through the workq so the app is never torn down in the middle of an LVGL
+//!   event callback.
 
 use log;
 

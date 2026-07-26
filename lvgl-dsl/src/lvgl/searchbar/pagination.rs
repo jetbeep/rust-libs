@@ -13,7 +13,7 @@ pub fn should_trigger(scroll_bottom_px: i32) -> bool {
 /// Enqueues a `LoadMore(token, page_index+1)` callback iff state=Results
 /// and no load-more is already pending. Sets `snap.pending_load_more=true`
 /// so the footer-loading slot becomes visible (§4 visibility table). The
-/// inner.pending_load_more: Option<u32> tracks the page number for replay.
+/// `inner.pending_load_more: Option<u32>` tracks the page number for replay.
 pub fn request_load_more(s: &mut InnerState) -> bool {
     if s.snap.state != State::Results {
         return false;

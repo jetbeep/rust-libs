@@ -30,10 +30,10 @@ pub(crate) const SELECTOR_KEY_DISABLED: u32 = 0x0005_0080;
 
 /// A bundle of keyboard visual properties that can be applied atomically.
 ///
-/// Stores raw 24-bit RGB hex values rather than [`Color`] because
-/// [`Color::hex`] calls a C FFI function and cannot be used in `const`
-/// contexts.  The values are converted to [`Color`] inside
-/// [`Keyboard::theme`](crate::lvgl::Keyboard::theme) at apply time.
+/// Stores raw 24-bit RGB hex values rather than [`crate::Color`] because
+/// [`crate::Color::hex`] calls a C FFI function and cannot be used in `const`
+/// contexts.  The values are converted to [`crate::Color`] inside
+/// [`crate::Keyboard::theme`] at apply time.
 ///
 /// ## Pre-built themes
 ///

@@ -1408,7 +1408,7 @@ impl Keyboard {
     /// Sets the font used to render key labels.
     ///
     /// Overrides the `Widget::text_font` default to also record the font
-    /// pointer in the global [`KB_STATE`] so the accent-popup buttonmatrix
+    /// pointer in the global `KB_STATE` so the accent-popup buttonmatrix
     /// (created dynamically on long-press, outside the keyboard's style
     /// inheritance scope) can render glyphs from the same font. Without
     /// this, accent variants in U+00A0–U+017F would fall back to LVGL's
@@ -1980,7 +1980,7 @@ impl Keyboard {
     /// Slides the keyboard off the bottom of the screen (250 ms, ease-in).
     ///
     /// Animates y from the docked position to `display_height`.  `HIDDEN` is
-    /// applied by [`on_slide_hide_done`] after the animation completes so that
+    /// applied by `on_slide_hide_done` after the animation completes so that
     /// off-screen touch events are blocked.
     pub fn slide_hide(&self) -> &Self {
         #[cfg(not(test))]
