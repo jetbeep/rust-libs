@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package Bus;
+
+enum ChargeStatus {
+    CHARGE_STATUS_UNDEFINED = 0;
+    CHARGE_STATUS_NOT_CHARGING = 1;
+    CHARGE_STATUS_TRICKLE_CHARGE = 2;
+    CHARGE_STATUS_PRE_CHARGE = 3;
+    CHARGE_STATUS_FAST_CHARGE = 4;
+    CHARGE_STATUS_TAPER_CHARGE = 5;
+    CHARGE_STATUS_TOP_OFF = 7;
+    CHARGE_STATUS_TERMINATION = 8;
+}
+
+message PollBatteryGetInfoResponse {
+    uint32 percent = 1;
+    uint32 voltage = 2;
+    ChargeStatus status = 3;
+    string firmware_version = 4;
+    repeated uint32 cell_voltage = 5;
+    float temperature = 6;
+}

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package Keypad;
+
+enum GPIOType {
+    GPIO_TYPE_DISCONNECTED = 0;
+    GPIO_TYPE_INPUT = 1;
+    GPIO_TYPE_OUTPUT = 2;
+}
+
+message GPIOSettings {
+    uint32 index = 1;
+    GPIOType type = 2;
+}
+
+enum ButtonType {
+    BUTTON_TYPE_INVALID = 0;
+    BUTTON_TYPE_1 = 1;
+    BUTTON_TYPE_2 = 2;
+    BUTTON_TYPE_3 = 3;
+    BUTTON_TYPE_4 = 4;
+    BUTTON_TYPE_5 = 5;
+    BUTTON_TYPE_6 = 6;
+    BUTTON_TYPE_7 = 7;
+    BUTTON_TYPE_8 = 8;
+    BUTTON_TYPE_9 = 9;
+    BUTTON_TYPE_0 = 10;
+    BUTTON_TYPE_STAR = 11;
+    BUTTON_TYPE_HASH = 12;
+    BUTTON_TYPE_CLEAR = 13;
+    BUTTON_TYPE_CANCEL = 14;
+    BUTTON_TYPE_ENTER = 15;
+    BUTTON_TYPE_A = 101;
+    BUTTON_TYPE_B = 102;
+    BUTTON_TYPE_C = 103;
+    BUTTON_TYPE_D = 104;
+}
+
+message Combination {
+    repeated ButtonType combination = 1;
+    uint32 timeout_sec = 2;
+}
+
+message Settings {
+    repeated GPIOSettings gpio_settings = 1;
+    repeated ButtonType alphabet = 2;
+    optional Combination reboot_combination = 3;
+}

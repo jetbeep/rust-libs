@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+message LogValue {
+    oneof value {
+        uint32 u32 = 1;
+        uint64 u64 = 2;
+        string str = 3;
+        uint32 rodata_offset = 4;
+        bytes encoded_str = 5;
+    }
+}
+
+enum LogLevel {
+    LOG_LEVEL_INF = 0;
+    LOG_LEVEL_ERR = 1;
+    LOG_LEVEL_WRN = 2;
+    LOG_LEVEL_DBG = 3;
+    LOG_LEVEL_NONE = 4;
+}
+
+message LogLine {
+    uint64 uptime_delta = 1;
+    int64 unix_delta = 2;
+    LogLevel log_level = 3;
+    LogValue module_name = 4;
+    optional LogValue thread = 5;
+    repeated LogValue regular = 6;
+    optional bytes hexdump = 7;
+}
+
+message Header {
+    uint32 magic_number = 1;
+    bool use_dict = 2;
+    string fw_version = 3;
+    string hw_version = 4;
+    string hw_revision = 5;
+    uint64 uptime = 6;
+    uint64 unix_time = 7;
+    uint32 rodata_start = 8;
+    uint32 rodata_end = 9;
+    optional string encoding_alphabet = 10;
+}
+
+message LogHeader {
+    Header header = 1;
+    uint32 crc32 = 2;
+}
+
+message LogRecord {
+    oneof value {
+        LogHeader header = 1;
+        LogLine line = 2;
+    }
+}
+
+message LogTextSettings {}
+
+message LogBinarySettings {
+    bool use_rodata_dict = 1;
+    bool to_lower_case = 2;
+    optional string encoding_alphabet = 3;
+}
+
+message LogSettings {
+    uint32 num_days_to_store = 1;
+    uint32 max_file_size = 2;
+    bool use_lz4 = 3;
+    oneof settings {
+        LogBinarySettings binary_settings = 4;
+        LogTextSettings text_settings = 5;
+    }
+}

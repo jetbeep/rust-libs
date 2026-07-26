@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package Bus;
+
+message PollVersionInfoResponse {
+    string app_version = 1;
+    string board_revision = 2;
+}

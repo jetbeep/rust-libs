@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package Protoscreen;
+
+message Settings {
+    uint32 backlight_brightness = 1;
+}

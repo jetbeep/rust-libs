@@ -1,3 +1,7 @@
 [workspace]
 members = ["jkv", "lvgl-dsl", "jetbeep-core", "fonts-cache"]
 resolver = "2"
+
+[workspace.package]
+license = "Apache-2.0"
+repository = "https://github.com/jetbeep/rust-libs"

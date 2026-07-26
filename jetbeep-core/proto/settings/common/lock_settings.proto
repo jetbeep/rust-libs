@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package Lock;
+
+message LockSettings {
+    uint32 power_duration_ms = 1;
+    bool inverse_status_logic = 2;
+}
+
+message LedSettings {}
+
+message PortSetting {
+    uint32 id = 1;
+    optional LockSettings lock_settings = 2;
+    optional LedSettings led_settings = 3;
+}
+
+enum OpenPolicy {
+    OPEN_POLICY_DONT_CHECK = 0;
+    OPEN_POLICY_CHECK_STATUS_BEFORE = 1;
+    OPEN_POLICY_CHECK_STATUS_AFTER = 2;
+    OPEN_POLICY_CHECK_STATUS_BOTH = 4;
+};
+
+message Board {
+    uint32 id = 1;
+    repeated PortSetting port_settings = 2;
+}
+
+message Settings {
+    repeated Board boards = 1;
+    OpenPolicy policy = 2;
+}

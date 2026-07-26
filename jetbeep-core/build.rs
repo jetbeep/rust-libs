@@ -3,39 +3,26 @@ use std::path::PathBuf;
 
 use bindgen::Builder;
 
-fn resolve_proto_root(manifest_dir: &PathBuf) -> PathBuf {
-    let candidates = [
-        manifest_dir.join("../../proto-files"),
-        manifest_dir.join("../../zephyr-libs/proto/proto-files"),
-        manifest_dir.join("../../../lib/proto-files"),
-    ];
-
-    for candidate in candidates {
-        let has_device_settings = candidate
-            .join("settings/common/device_settings.proto")
-            .is_file();
-        let has_lock_statuses = candidate
-            .join("bus/v2/poll_cmd/lock_statuses_get.proto")
-            .is_file();
-
-        if has_device_settings && has_lock_statuses {
-            return candidate;
-        }
-    }
-
-    panic!(
-        "failed to locate proto-files directory from CARGO_MANIFEST_DIR={}",
-        manifest_dir.display()
-    );
-}
-
 fn main() {
     if env::var("CARGO_FEATURE_PLATFORM_ZEPHYR").is_ok() {
         generate_zephyr_bindings();
     }
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
-    let proto_root = resolve_proto_root(&manifest_dir);
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
+    let proto_root = manifest_dir.join("proto");
+    if !proto_root
+        .join("settings/common/device_settings.proto")
+        .is_file()
+        || !proto_root
+            .join("bus/v2/poll_cmd/lock_statuses_get.proto")
+            .is_file()
+    {
+        panic!(
+            "public protocol definitions are missing from {}",
+            proto_root.display()
+        );
+    }
     let device_settings_proto = proto_root.join("settings/common/device_settings.proto");
     let lock_statuses_proto = proto_root.join("bus/v2/poll_cmd/lock_statuses_get.proto");
     let modem_get_info_proto = proto_root.join("bus/v2/poll_cmd/modem_get_info.proto");
@@ -46,11 +33,13 @@ fn main() {
     println!("cargo:rerun-if-changed={}", device_settings_proto.display());
     println!("cargo:rerun-if-changed={}", lock_statuses_proto.display());
     println!("cargo:rerun-if-changed={}", modem_get_info_proto.display());
-    println!("cargo:rerun-if-changed={}", battery_get_info_proto.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        battery_get_info_proto.display()
+    );
     println!("cargo:rerun-if-changed={}", version_info_proto.display());
     println!("cargo:rerun-if-changed={}", server_request_proto.display());
-    println!("cargo:rerun-if-changed={}", proto_root.join("settings/common").display());
-    println!("cargo:rerun-if-changed={}", proto_root.join("bus/v2/poll_cmd").display());
+    println!("cargo:rerun-if-changed={}", proto_root.display());
 
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("failed to locate vendored protoc");
     env::set_var("PROTOC", protoc);
@@ -111,7 +100,9 @@ fn generate_zephyr_bindings() {
         builder = builder.clang_arg(format!("-include{}/autoconf.h", generated_zephyr_include));
     }
 
-    let bindings = builder.generate().expect("Unable to generate jetbeep-core bindings");
+    let bindings = builder
+        .generate()
+        .expect("Unable to generate jetbeep-core bindings");
     bindings
         .write_to_file(PathBuf::from(out_dir).join("bindings.rs"))
         .expect("Failed to write jetbeep-core bindings");

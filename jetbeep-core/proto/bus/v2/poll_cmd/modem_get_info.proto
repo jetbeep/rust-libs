@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package Bus;
+
+enum NetworkRegistrationStatus {
+    NETWORK_REG_NOT_SEARCHING = 0;
+    NETWORK_REG_NOT_INIT = -1;
+    NETWORK_REG_HOME_NETWORK = 1;
+    NETWORK_REG_SEARCHING = 2;
+    NETWORK_REG_UNKNOWN = 4;
+    NETWORK_REG_ROAMING = 5;
+    NETWORK_REG_UICC_ERROR = 90;
+}
+
+message ModemInfo {
+    string imei = 1;
+}
+
+message SimInfo {
+    bool initialized = 1;
+    string imsi = 2;
+    string iccid = 3;
+}
+
+message NetworkRegistrationInfo {
+    NetworkRegistrationStatus status = 1;
+    string tracking_area_code = 2;
+    string cell_id = 3;
+    optional int32 reject_cause = 4;
+    string operator_name = 5;
+    string operator_name_short = 6;
+    string mcc_mnc = 7;
+    uint32 band = 8;
+    bool pdp_activated = 9;
+    string ip_address = 10;
+}
+
+message SignalInfo {
+    uint32 rspr = 1;
+    uint32 rspr_index = 2;
+    uint32 rsrq = 3;
+    uint32 rsrq_index = 4;
+}
+
+message PollModemGetInfoResponse {
+    ModemInfo modem_info = 1;
+    SimInfo sim_info = 2;
+    NetworkRegistrationInfo network_reg_info = 3;
+    SignalInfo signal_info = 4;
+}

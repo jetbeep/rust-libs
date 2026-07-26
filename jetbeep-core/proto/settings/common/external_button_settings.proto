@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+message ExternalButtonAnimation {
+    uint32 max_brightness = 1;
+    uint32 min_brightness = 2;
+    uint32 fade_duration_ms = 3;
+    uint32 fade_step_ms = 4;
+    uint32 delay_duration_ms = 5;
+}
+
+message ExternalButtonSettings {
+    uint32 port_id = 1;
+    ExternalButtonAnimation idle_state = 2;
+    ExternalButtonAnimation active_state = 3;
+}

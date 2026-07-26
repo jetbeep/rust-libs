@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+import "settings/common/modem_settings.proto";
+import "settings/common/user_settings.proto";
+import "settings/common/keypad_settings.proto";
+import "settings/common/display_settings.proto";
+import "settings/common/lock_settings.proto";
+import "settings/common/asp_script_settings.proto";
+import "settings/common/charger_settings.proto";
+import "settings/common/log_settings.proto";
+import "settings/common/other_settings.proto";
+import "settings/common/external_button_settings.proto";
+
+enum DeviceSettingsVersion {
+    DEVICE_SETTINGS_V_INVALID = 0;
+    DEVICE_SETTINGS_V1 = 1;
+}
+
+message DeviceSettings {
+    uint32 crc32_hash = 1;
+    optional ModemSettings modem_settings = 2;
+    optional UserSettings user_settings = 3;
+    optional Keypad.Settings keypad_settings = 4;
+    optional DisplaySettings display_settings = 5;
+    optional Lock.Settings lock_settings = 6;
+    // TODO: Extender.Settings = 7;
+    optional AspScriptSettings asp_script_settings = 8;
+    optional ChargerSettings charger_settings = 9;
+    optional LogSettings log_settings = 10;
+    optional OtherSettings other_settings = 11;
+    optional ExternalButtonSettings external_button_settings = 12;
+};

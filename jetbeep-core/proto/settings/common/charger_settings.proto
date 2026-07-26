@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+message ProtochargerSettings {
+    uint32 battery_capacity = 1;
+    bool balancing_enable = 2;
+    uint32 charge_voltage_limit = 3;
+    bool solar_enable = 4;
+    uint32 charge_current_limit = 5;
+}
+
+message ChargerSettings {
+    ProtochargerSettings protocharger_settings = 1;
+}

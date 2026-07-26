@@ -3,6 +3,8 @@ name = "lvgl-dsl"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 doctest = false

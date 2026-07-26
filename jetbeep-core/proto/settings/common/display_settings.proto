@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+import "settings/common/character_display_settings.proto";
+import "settings/common/protoscreen_settings.proto";
+import "settings/common/jetbeep_display_settings.proto";
+
+message DisplaySettings {
+    oneof display {
+        CharacterDisplay.Settings character_display_settings = 1;
+        Protoscreen.Settings protoscreen_settings = 2;
+        JetbeepDisplaySettings jetbeep_settings = 3;
+    }
+}

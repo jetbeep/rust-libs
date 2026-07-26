@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+message AspScriptSettings {
+    string ui_script = 1;
+    reserved 2;
+    string service_script = 3;
+    bool reboot_on_asp_crash = 4;
+    bool use_tcp_bridge = 5;
+}

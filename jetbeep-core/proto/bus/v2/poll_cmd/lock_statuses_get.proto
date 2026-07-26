@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package Bus;
+
+enum LockStatus {
+    LOCK_STATUS_DISABLED = 0;
+    LOCK_STATUS_OPENED = 1;
+    LOCK_STATUS_CLOSED = 2;
+}
+
+message PollLockStatusesGetRequest {
+    uint32 board_id = 1;
+    uint32 num_attempts = 2;
+}
+
+message PollLockStatusesGetResponse {
+    repeated LockStatus statuses = 1;
+}

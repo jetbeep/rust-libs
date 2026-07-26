@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package Bus;
+
+message PollServerRequestRequest {
+    int32 request_type = 1;
+    int32 timeout_ms = 2;
+    bytes body = 3;
+}
+
+message PollServerRequestResponse {
+    int32 error_code = 1;
+    string error_text = 2;
+    bytes body = 3;
+    bool compressed = 4;
+    int32 uncompressed_size = 5;
+}

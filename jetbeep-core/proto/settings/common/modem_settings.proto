@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+message SimPin {
+    optional uint32 pin = 1;
+    reserved 2, 3, 4;
+}
+
+enum LtePreference {
+    LTE_PREFERENCE_INVALID = 0;
+    LTE_PREFERENCE_LTE_M = 1;
+    LTE_PREFERENCE_NB_IOT = 2;
+    LTE_PREFERENCE_NETWORK_BUT_LTE_M = 3;
+    LTE_PREFERENCE_NETWORK_BUT_NB_IOT = 4;
+}
+
+enum PDNFamily {
+    PDN_FAMILY_INVALID = 0;
+    PDN_FAMILY_IPV4 = 1;
+    PDN_FAMILY_IPV6 = 2;
+    PDN_FAMILY_IPV4V6 = 3;
+    PDN_FAMILY_NON_IP = 4;
+}
+
+enum PDNAuth {
+    PDN_AUTH_NONE = 0;
+    PDN_AUTH_PAP = 1;
+    PDN_AUTH_CHAP = 2;
+}
+
+enum Band {
+    BAND_INVALID = 0;
+    BAND_B1 = 1;
+    BAND_B2 = 2;
+    BAND_B3 = 3;
+    BAND_B4 = 4;
+    BAND_B5 = 5;
+    BAND_B8 = 8;
+    BAND_B12 = 12;
+    BAND_B13 = 13;
+    BAND_B14 = 14;
+    BAND_B17 = 17;
+    BAND_B18 = 18;
+    BAND_B19 = 19;
+    BAND_B20 = 20;
+    BAND_B25 = 25;
+    BAND_B26 = 26;
+    BAND_B28 = 28;
+    BAND_B66 = 66;
+}
+
+message BandMask {
+    uint32 mask1 = 1;
+    uint32 mask2 = 2;
+    uint32 mask3 = 3;
+}
+
+message NetConfig {
+    bool lte_m_support = 1;
+    bool nb_iot_support = 2;
+    reserved 3;
+    LtePreference preference = 4;
+}
+
+message PDNConfig {
+    PDNFamily family = 1;
+    string apn = 2;
+    PDNAuth auth = 3;
+    string username = 4;
+    string password = 5;
+    uint32 cid = 6;
+}
+
+enum TLSSecType {
+    TLS_SEC_TYPE_ROOT_CA = 0;
+    TLS_SEC_TYPE_CERTIFICATE = 1;
+    TLS_SEC_TYPE_PRIVATE_KEY = 2;
+    TLS_SEC_TYPE_PRE_SHARED_KEY = 3;
+    TLS_SEC_TYPE_PSK_IDENTITY = 4;
+}
+
+message TLSSettings {
+    bool peer_verify = 1;
+    bool hostname_verify = 2;
+    TLSSecType sec_type = 3;
+    string sec_content = 4;
+}
+
+enum PeriodicType {
+    PERIODIC_TYPE_INTERVAL = 0;
+    PERIODIC_TYPE_SCHEDULE = 1;
+}
+
+message HourMinutes {
+    uint32 hour = 1;
+    uint32 minutes = 2;
+}
+
+message PeriodicSettings {
+    PeriodicType type = 1;
+    uint32 interval_minutes = 2;
+    repeated HourMinutes hour_minutes = 3;
+}
+
+message PingSettings {
+    uint32 interval_ms = 1;
+}
+
+message ServerSettings {
+    PeriodicSettings periodic_settings = 1;
+    string tcp_hostname = 2;
+    uint32 tcp_port = 3;
+    reserved 4, 5;
+    optional TLSSettings tls_settings = 6;
+    uint32 cid = 7;
+    optional PingSettings ping_settings = 8;
+}
+
+message CertificateInfo {
+    uint32 sec_tag = 1;
+    uint32 type = 2;
+    uint32 crc32_sha256 = 3;
+}
+
+message CertificateSettings {
+    repeated CertificateInfo certificates = 1;
+}
+
+message ModemSettings {
+    optional SimPin sim_pin = 1;
+    optional NetConfig net_config = 2;
+    optional PDNConfig pdn_config = 3;
+    optional BandMask band_mask = 4;
+    optional ServerSettings server_settings = 5;
+    bool use_esim = 6;
+    repeated PDNConfig pdn_configs = 7;
+    optional CertificateSettings certificate_settings = 8;
+};

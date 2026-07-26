@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+enum BusProtocolVersion {
+    BUS_PROTOCOL_V_INVALID = 0;
+    BUS_PROTOCOL_V1 = 1;
+    BUS_PROTOCOL_V2 = 2;
+}
+
+message OtherSettings {
+    BusProtocolVersion bus_protocol_version = 1;
+}

@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+message UserSettings {
+    bytes user_data = 1;
+    bytes user_params = 2;
+}

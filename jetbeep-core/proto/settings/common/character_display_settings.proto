@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package CharacterDisplay;
+
+enum Controller {
+    CONTROLLER_INVALID = 0;
+    CONTROLLER_SSD1311 = 1;
+}
+
+enum CharacterSet {
+    CHARACTER_SET_INVALID = 0;
+    CHARACTER_SET_ROM_A = 1;
+    CHARACTER_SET_ROM_B = 2;
+    CHARACTER_SET_ROM_C = 3;
+}
+
+message Settings {
+    Controller controller = 1;
+    uint32 width = 2;
+    uint32 height = 3;
+    CharacterSet character_set = 4;
+    uint32 contrast = 5;
+}
