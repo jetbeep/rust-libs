@@ -21,6 +21,7 @@ env_logger = { version = "0.11", optional = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"], optional = true }
 prost = { version = "0.13", default-features = false, features = ["derive"] }
+crc = { workspace = true }
 jkv = { path = "../jkv" }
 enumset = { version = "1.1.10", optional = true }
 lvgl-dsl = { path = "../lvgl-dsl", optional = true }
