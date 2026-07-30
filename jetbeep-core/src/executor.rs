@@ -157,3 +157,4 @@ unsafe fn waker_drop(data: *const ()) {
 
 static TASK_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+

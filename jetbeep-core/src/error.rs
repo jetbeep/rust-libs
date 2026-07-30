@@ -3,7 +3,7 @@ use alloc::string::String;
 #[cfg(feature = "platform-zephyr")]
 use alloc::{str, string::ToString};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Error {
     pub code: i32,
     pub message: String,

@@ -841,6 +841,10 @@ unsafe extern "C" fn cb_version_info(error: *const jb_error_t, data: *const u8, 
 
 /// Gets device settings asynchronously.
 pub async fn get_device_settings() -> Result<DeviceSettings, Error> {
+	crate::device_settings_cache::get().await
+}
+
+pub(crate) async fn fetch_device_settings() -> Result<DeviceSettings, Error> {
 	let (sender, receiver) = oneshot::channel::<Result<DeviceSettings, Error>>();
 	unsafe {
 		poll_cmd_get_device_settings(
