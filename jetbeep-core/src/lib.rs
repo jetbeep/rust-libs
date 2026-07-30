@@ -47,6 +47,9 @@ pub mod bus;
 
 pub mod error;
 
+/// CRC-64/XZ checksums (platform-agnostic; `no_std`-compatible).
+pub mod crc64;
+
 pub mod generation;
 
 #[cfg(any(feature = "platform-zephyr", test))]
