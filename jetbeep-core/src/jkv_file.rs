@@ -60,8 +60,8 @@ async fn read_all(path: &str) -> Result<Vec<u8>, Error> {
 
 /// Truncate/create `path` and write `bytes` in full, then fsync and close.
 async fn write_all(path: &str, bytes: &[u8]) -> Result<(), Error> {
-    let mut file =
-        File::open(path, OpenFlags::Write | OpenFlags::Create | OpenFlags::Truncate).await?;
+    let flags = OpenFlags::Write | OpenFlags::Create | OpenFlags::Truncate;
+    let mut file = File::open(path, flags).await?;
     let mut written = 0usize;
     while written < bytes.len() {
         let n = match file.write(&bytes[written..]).await {

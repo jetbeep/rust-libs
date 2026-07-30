@@ -49,6 +49,9 @@ pub mod error;
 
 pub mod generation;
 
+#[cfg(any(feature = "platform-zephyr", test))]
+mod device_settings_cache;
+
 #[cfg(feature = "platform-desktop")]
 pub mod executor;
 
@@ -150,4 +153,13 @@ pub fn unix_time() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn jetbeep_rust_init() {
     init(None);
+    device_settings_cache::start();
+}
+
+#[cfg(feature = "platform-zephyr")]
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_device_settings_set_expected_crc(has_crc: bool, crc: u32) {
+    workq::submit(core::time::Duration::from_millis(0), move |_| {
+        device_settings_cache::set_expected_crc(has_crc.then_some(crc));
+    });
 }

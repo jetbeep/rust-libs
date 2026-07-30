@@ -7,6 +7,7 @@ pub type TaskId = u32;
 pub const TASK_ID_INVALID: TaskId = 0xFFFFFFFF;
 
 type CWorkCallback = unsafe extern "C" fn(task_id: TaskId, user_data: *mut c_void);
+#[derive(Clone, Copy)]
 enum WorkQType {
     Rust = 0,
     Background = 1,
@@ -49,15 +50,14 @@ pub fn fn_mut_from_fn_once<A, R>(fn_once: impl FnOnce(A) -> R) -> impl FnMut(A) 
     }
 }
 
-fn restart_internal<F: FnOnce(TaskId)>(workq_type: WorkQType, task_id: TaskId, timeout: Duration, result_cb: F) -> TaskId {
+fn restart_internal<F: FnOnce(TaskId)>(
+    workq_type: WorkQType,
+    task_id: TaskId,
+    timeout: Duration,
+    result_cb: F,
+) -> TaskId {
     unsafe {
         let mut id = task_id;
-        // Main-workq closures are tagged with the app generation at submission
-        // time and silently dropped when stale, so completions belonging to a
-        // soft-killed app never run. Executor tasks of the old generation are
-        // cancelled before stale closures are dropped (see executor::cancel_stale),
-        // which makes dropping closures that own oneshot senders safe: the wake
-        // triggered by the sender drop hits an already-completed task.
         let gate = match workq_type {
             WorkQType::Rust => Some(crate::generation::current()),
             WorkQType::Background => None,
