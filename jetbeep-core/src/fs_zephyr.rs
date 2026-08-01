@@ -11,6 +11,8 @@ use crate::c_bindings::*;
 
 pub type FsOffset = usize;
 
+const READ_ALL_CHUNK: usize = 4096;
+
 pub struct File {
     inner: fs_file_t,
 }
@@ -138,16 +140,15 @@ pub async fn mkdir(path: &str) -> Result<(), Error> {
 
     unsafe {
         submit_bg(Duration::from_millis(0), move |_| {
-            let result: i32;
-
-            result = fs_mkdir(c_path.as_ptr());
+            let error = fs_tools_mkdir(c_path.as_ptr(), true);
+            let result = if (*error).code == 0 {
+                Ok(())
+            } else {
+                Err(crate::error::from_jb_error(error))
+            };
 
             submit(Duration::from_millis(0), move |_| {
-                if result == 0 {
-                    sender.send(Ok(())).ok();
-                } else {
-                    sender.send(Err(Error { code: result, message: String::from("fs_mkdir") })).ok();
-                }
+                sender.send(result).ok();
             });
         });
     }
@@ -183,6 +184,67 @@ pub async fn opendir(path: &str) -> Result<Dir, Error> {
                 } else {
                     sender.send(Err(Error { code: result, message: String::from("fs_opendir") })).ok();
                 }
+            });
+        });
+    }
+
+    receiver.await.unwrap()
+}
+
+pub(crate) async fn read_all(path: &str) -> Result<Vec<u8>, Error> {
+    let c_path = CString::new(path).unwrap();
+    let (sender, receiver) = oneshot::channel::<Result<Vec<u8>, Error>>();
+
+    unsafe {
+        submit_bg(Duration::from_millis(0), move |_| {
+            let mut file_fd: fs_file_t = core::mem::zeroed();
+            fs_file_t_init_shim(&mut file_fd);
+
+            let open_result = fs_open(&mut file_fd, c_path.as_ptr(), FS_O_READ as u8);
+            let result = if open_result != 0 {
+                Err(Error {
+                    code: open_result,
+                    message: String::from("fs_open"),
+                })
+            } else {
+                let mut bytes = Vec::new();
+                let mut buffer = vec![0u8; READ_ALL_CHUNK];
+                let mut read_error = None;
+
+                loop {
+                    let bytes_read = fs_read(
+                        &mut file_fd,
+                        buffer.as_mut_ptr() as *mut core::ffi::c_void,
+                        buffer.len(),
+                    );
+                    if bytes_read < 0 {
+                        read_error = Some(Error {
+                            code: bytes_read as i32,
+                            message: String::from("fs_read"),
+                        });
+                        break;
+                    }
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..bytes_read as usize]);
+                }
+
+                let close_result = fs_close(&mut file_fd);
+                if let Some(error) = read_error {
+                    Err(error)
+                } else if close_result != 0 {
+                    Err(Error {
+                        code: close_result,
+                        message: String::from("fs_close"),
+                    })
+                } else {
+                    Ok(bytes)
+                }
+            };
+
+            submit(Duration::from_millis(0), move |_| {
+                sender.send(result).ok();
             });
         });
     }
