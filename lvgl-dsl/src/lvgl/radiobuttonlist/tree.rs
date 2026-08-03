@@ -15,6 +15,9 @@ pub(crate) struct RowWidgets {
     /// Secondary/dim label (e.g. " (W:50 x H:41 x D:52 cm)"). Styled via
     /// `dim_label_style`. Hidden when no dim text was provided.
     pub dim_label: *mut c_bindings::lv_obj_t,
+    /// Flex-row wrapper holding `label` (+ optional `dim_label`). Kept so
+    /// `wrap_labels` can let it grow and bound the label width for wrapping.
+    pub label_container: *mut c_bindings::lv_obj_t,
 }
 
 pub(crate) struct Tree {
@@ -155,6 +158,7 @@ pub(crate) unsafe fn build(
             inner_dot,
             label,
             dim_label,
+            label_container,
         });
     }
 
