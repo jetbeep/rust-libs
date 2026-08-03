@@ -160,6 +160,49 @@ impl RadioButtonList {
         self
     }
 
+    /// Enable (or disable) multi-line wrapping for long option labels.
+    ///
+    /// When enabled, each label wraps within the remaining row width and the
+    /// row grows vertically to fit the wrapped text while keeping the
+    /// configured `row_height` as a minimum — short labels stay single-line
+    /// pills, long ones expand to two (or more) lines. Call after
+    /// construction / styling.
+    pub fn wrap_labels(&mut self, wrap: bool) -> &mut Self {
+        // LV_SIZE_CONTENT — cannot import from size.rs (private const).
+        const LV_SIZE_CONTENT: i32 = 1_073_741_823; // 0x3FFF_FFFF
+        let inner = self.inner.borrow();
+        let min_height = inner.cfg.row_height;
+        for w in &inner.tree.rows {
+            unsafe {
+                if wrap {
+                    crate::c_bindings::lv_label_set_long_mode(
+                        w.label,
+                        crate::c_bindings::LV_LABEL_LONG_MODE_WRAP,
+                    );
+                    // Let the label container fill the remaining row width so
+                    // the label wraps instead of overflowing/clipping.
+                    crate::c_bindings::lv_obj_set_flex_grow(w.label_container, 1);
+                    crate::c_bindings::lv_obj_set_width(w.label, crate::c_bindings::lv_pct(100));
+                    // Grow the row to the wrapped content height, floored at
+                    // the configured single-line row height.
+                    crate::c_bindings::lv_obj_set_height(w.row, LV_SIZE_CONTENT);
+                    crate::c_bindings::lv_obj_set_style_min_height(w.row, min_height, 0);
+                } else {
+                    crate::c_bindings::lv_label_set_long_mode(
+                        w.label,
+                        crate::c_bindings::LV_LABEL_LONG_MODE_CLIP,
+                    );
+                    crate::c_bindings::lv_obj_set_flex_grow(w.label_container, 0);
+                    crate::c_bindings::lv_obj_set_width(w.label, LV_SIZE_CONTENT);
+                    crate::c_bindings::lv_obj_set_height(w.row, min_height);
+                    crate::c_bindings::lv_obj_set_style_min_height(w.row, 0, 0);
+                }
+            }
+        }
+        drop(inner);
+        self
+    }
+
     pub fn dim_label_style(&mut self, style: RadioButtonListStyle) -> &mut Self {
         self.inner.borrow_mut().dim_label_style = style;
         self.refresh_all_rows();
@@ -529,6 +572,77 @@ mod tests {
                 .any(|c| matches!(c, LvCall::SetStyleTextFont { .. })),
             "{calls:?}"
         );
+    }
+
+    #[test]
+    fn wrap_labels_true_wraps_each_label_and_grows_rows() {
+        // LV_SIZE_CONTENT — mirrors the private const used by the widget.
+        const LV_SIZE_CONTENT: i32 = 1_073_741_823;
+        let p = parent();
+        let mut list = RadioButtonList::new(&p, &["One", "Two", "Three"]);
+        spy_drain();
+
+        list.wrap_labels(true);
+
+        let calls = spy_drain();
+        // One label switched to WRAP long-mode per row.
+        let wrap_modes = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::LabelSetLongMode { mode, .. }
+                if *mode == crate::c_bindings::LV_LABEL_LONG_MODE_WRAP))
+            .count();
+        assert_eq!(wrap_modes, 3, "one wrap mode per row, {calls:?}");
+        // Each label is bounded to 100% width so it wraps within the row.
+        let pct_widths = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetWidth { w: 100, .. }))
+            .count();
+        assert_eq!(pct_widths, 3, "one 100% label width per row, {calls:?}");
+        // Each row grows to the wrapped content height.
+        let content_heights = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetHeight { h, .. } if *h == LV_SIZE_CONTENT))
+            .count();
+        assert_eq!(content_heights, 3, "one content height per row, {calls:?}");
+    }
+
+    #[test]
+    fn wrap_labels_false_restores_single_line_fixed_height_rows() {
+        // LV_SIZE_CONTENT — mirrors the private const used by the widget.
+        const LV_SIZE_CONTENT: i32 = 1_073_741_823;
+        let p = parent();
+        let mut list = RadioButtonList::with_config(
+            &p,
+            &["One", "Two"],
+            RadioButtonListConfig {
+                row_height: 60,
+                ..RadioButtonListConfig::default()
+            },
+        );
+        spy_drain();
+
+        list.wrap_labels(false);
+
+        let calls = spy_drain();
+        // Labels switch back to CLIP long-mode.
+        let clip_modes = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::LabelSetLongMode { mode, .. }
+                if *mode == crate::c_bindings::LV_LABEL_LONG_MODE_CLIP))
+            .count();
+        assert_eq!(clip_modes, 2, "one clip mode per row, {calls:?}");
+        // Rows return to the configured fixed height.
+        let fixed_heights = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetHeight { h: 60, .. }))
+            .count();
+        assert_eq!(fixed_heights, 2, "one fixed height per row, {calls:?}");
+        // Labels return to content-sized width.
+        let content_widths = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetWidth { w, .. } if *w == LV_SIZE_CONTENT))
+            .count();
+        assert_eq!(content_widths, 2, "one content width per row, {calls:?}");
     }
 
     #[test]
