@@ -182,6 +182,14 @@ impl RadioButtonList {
                     // Let the label container fill the remaining row width so
                     // the label wraps instead of overflowing/clipping.
                     crate::c_bindings::lv_obj_set_flex_grow(w.label_container, 1);
+                    // The container holds `label` (+ optional `dim_label`).
+                    // Allow it to wrap so a `dim_label` after a full-width
+                    // primary label drops to the next line instead of being
+                    // pushed off-screen and clipped.
+                    crate::c_bindings::lv_obj_set_flex_flow(
+                        w.label_container,
+                        super::FlexFlow::RowWrap as u32,
+                    );
                     crate::c_bindings::lv_obj_set_width(w.label, crate::c_bindings::lv_pct(100));
                     // Grow the row to the wrapped content height, floored at
                     // the configured single-line row height.
@@ -193,6 +201,10 @@ impl RadioButtonList {
                         crate::c_bindings::LV_LABEL_LONG_MODE_CLIP,
                     );
                     crate::c_bindings::lv_obj_set_flex_grow(w.label_container, 0);
+                    crate::c_bindings::lv_obj_set_flex_flow(
+                        w.label_container,
+                        super::FlexFlow::Row as u32,
+                    );
                     crate::c_bindings::lv_obj_set_width(w.label, LV_SIZE_CONTENT);
                     crate::c_bindings::lv_obj_set_height(w.row, min_height);
                     crate::c_bindings::lv_obj_set_style_min_height(w.row, 0, 0);
@@ -471,7 +483,7 @@ mod tests {
     use super::*;
     use crate::c_bindings::{LvCall, spy_drain};
     use crate::lvgl::screen::Screen;
-    use crate::lvgl::{Color, CornerRadius, FlexAlign, Font};
+    use crate::lvgl::{Color, CornerRadius, FlexAlign, FlexFlow, Font};
 
     fn parent() -> Screen {
         crate::c_bindings::reset_all_thread_local_spy_state();
@@ -604,6 +616,14 @@ mod tests {
             .filter(|c| matches!(c, LvCall::ObjSetHeight { h, .. } if *h == LV_SIZE_CONTENT))
             .count();
         assert_eq!(content_heights, 3, "one content height per row, {calls:?}");
+        // Each label container is switched to RowWrap so an optional dim label
+        // drops to the next line instead of being clipped off-screen.
+        let wrap_flows = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetFlexFlow { flow, .. }
+                if *flow == FlexFlow::RowWrap as u32))
+            .count();
+        assert_eq!(wrap_flows, 3, "one RowWrap container per row, {calls:?}");
     }
 
     #[test]
@@ -643,6 +663,38 @@ mod tests {
             .filter(|c| matches!(c, LvCall::ObjSetWidth { w, .. } if *w == LV_SIZE_CONTENT))
             .count();
         assert_eq!(content_widths, 2, "one content width per row, {calls:?}");
+        // Containers return to the non-wrapping Row flow.
+        let row_flows = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetFlexFlow { flow, .. }
+                if *flow == FlexFlow::Row as u32))
+            .count();
+        assert_eq!(row_flows, 2, "one Row container per row, {calls:?}");
+    }
+
+    #[test]
+    fn wrap_labels_true_keeps_dim_label_containers_wrapping() {
+        let p = parent();
+        let mut list = RadioButtonList::with_config_and_dim_labels(
+            &p,
+            &["One", "Two"],
+            &[" (dim a)", " (dim b)"],
+            RadioButtonListConfig::default(),
+        );
+        spy_drain();
+
+        list.wrap_labels(true);
+
+        let calls = spy_drain();
+        // With a dim label present, the container must wrap (RowWrap) so the
+        // dim label stays renderable below the full-width primary label
+        // instead of being pushed out and clipped.
+        let wrap_flows = calls
+            .iter()
+            .filter(|c| matches!(c, LvCall::ObjSetFlexFlow { flow, .. }
+                if *flow == FlexFlow::RowWrap as u32))
+            .count();
+        assert_eq!(wrap_flows, 2, "one RowWrap container per row, {calls:?}");
     }
 
     #[test]
