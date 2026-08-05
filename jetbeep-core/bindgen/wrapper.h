@@ -10,6 +10,7 @@ extern int errno;
 #include <zephyr/fs/fs.h>
 
 #include <zephyr-libs/error/error.h>
+#include <zephyr-libs/fs_tools/fs_tools.h>
 #include <zephyr-libs/unix_time/unix_time.h>
 #include <zephyr-libs/bus_common/poll_api/poll_api.h>
 #include <app/i2c_jb_bus/i2c_jb_bus.h>

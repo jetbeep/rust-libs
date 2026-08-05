@@ -222,6 +222,19 @@ pub fn configure_mount_root(fs_root: Option<&str>) -> Result<(), Error> {
     }
 }
 
+pub(crate) async fn read_all(path: &str) -> Result<Vec<u8>, Error> {
+    let host_path = resolve_virtual_path(path, false, "read_all")?;
+
+    run_bg(move || {
+        let mut file = std::fs::File::open(&host_path).map_err(|e| map_io_error("open", e))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| map_io_error("read", e))?;
+        Ok(bytes)
+    })
+    .await
+}
+
 fn ensure_within_root(candidate: &Path, cfg: &MountConfig, op: &str) -> Result<(), Error> {
     let mut probe = Some(candidate);
     while let Some(path) = probe {
@@ -387,6 +400,15 @@ impl File {
         run_bg(move || {
             let guard = inner.lock().map_err(|_| map_lock_error("sync"))?;
             guard.sync_all().map_err(|e| map_io_error("sync", e))?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn mkdir_all(path: &str) -> Result<(), Error> {
+        let host_path = resolve_virtual_path(path, false, "mkdir_all")?;
+        run_bg(move || {
+            fs::create_dir_all(&host_path).map_err(|e| map_io_error("mkdir_all", e))?;
             Ok(())
         })
         .await

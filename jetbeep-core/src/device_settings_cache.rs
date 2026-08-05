@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
 use futures::channel::oneshot;
+use prost::Message;
 
 use crate::error::Error;
 use crate::proto::DeviceSettings;
@@ -12,11 +13,9 @@ use crate::proto::DeviceSettings;
 #[cfg(feature = "platform-zephyr")]
 const CACHE_DIR: &str = "/lfs1/sys";
 #[cfg(feature = "platform-zephyr")]
-const CACHE_PATH: &str = "/lfs1/sys/device_settings.jkv";
+const CACHE_PATH: &str = "/lfs1/sys/device_settings.pb";
 #[cfg(feature = "platform-zephyr")]
-const CACHE_TEMP_PATH: &str = "/lfs1/sys/device_settings.jkv.tmp";
-#[cfg(feature = "platform-zephyr")]
-const EEXIST: i32 = 17;
+const CACHE_TEMP_PATH: &str = "/lfs1/sys/device_settings.pb.tmp";
 #[cfg(feature = "platform-zephyr")]
 const EINVAL: i32 = 22;
 #[cfg(feature = "platform-zephyr")]
@@ -31,11 +30,45 @@ enum ExpectedCrc {
     Value(u32),
 }
 
+impl ExpectedCrc {
+    #[cfg(feature = "platform-zephyr")]
+    fn log_value(self) -> alloc::string::String {
+        match self {
+            Self::Unknown => "unknown".into(),
+            Self::Missing => "missing".into(),
+            Self::Value(crc) => alloc::format!("0x{crc:08x}"),
+        }
+    }
+}
+
+#[cfg(feature = "platform-zephyr")]
+fn optional_crc_log_value(crc: Option<u32>) -> alloc::string::String {
+    crc.map_or_else(|| "none".into(), |crc| alloc::format!("0x{crc:08x}"))
+}
+
 enum Action {
     None,
     Load(u64),
     Ready(DeviceSettings, Vec<Waiter>),
     Refresh(u64),
+}
+
+fn crc_decision(
+    previous: ExpectedCrc,
+    received: ExpectedCrc,
+    action: &Action,
+    refresh_in_flight: bool,
+) -> &'static str {
+    if previous == received {
+        "unchanged"
+    } else {
+        match action {
+            Action::Ready(_, _) => "ready",
+            Action::Refresh(_) => "refresh",
+            Action::None if refresh_in_flight => "refresh",
+            Action::None | Action::Load(_) => "pending",
+        }
+    }
 }
 
 struct State {
@@ -101,6 +134,26 @@ impl State {
         Action::Load(self.epoch)
     }
 
+    fn begin_preserving_expected(&mut self) -> Action {
+        self.begin(self.expected)
+    }
+
+    fn update_expected(&mut self, expected: ExpectedCrc) -> Action {
+        if self.expected == expected {
+            return Action::None;
+        }
+
+        self.expected = expected;
+        self.valid = false;
+        self.retry_blocked = false;
+
+        if self.refresh_in_flight {
+            return Action::None;
+        }
+
+        self.next_action()
+    }
+
     fn response_matches(&self, refresh_epoch: u64, settings: &DeviceSettings) -> bool {
         if self.epoch != refresh_epoch {
             return false;
@@ -131,24 +184,27 @@ fn state() -> &'static mut State {
 
 #[cfg(feature = "platform-zephyr")]
 pub(crate) fn start() {
-    let action = state().begin(ExpectedCrc::Unknown);
+    let cache = state();
+    let action = cache.begin_preserving_expected();
+    log::info!(
+        "device settings cache: starting with expected CRC {}",
+        cache.expected.log_value()
+    );
     drive(action);
 }
 
 #[cfg(feature = "platform-zephyr")]
 fn load_cache(load_epoch: u64) {
     crate::executor::run(async move {
-        if let Err(error) = crate::fs::mkdir(CACHE_DIR).await {
-            if error.code != -EEXIST {
-                log::warn!(
-                    "device settings cache: failed to create {}: {}",
-                    CACHE_DIR,
-                    error
-                );
-            }
-        }
-
-        let cached = match crate::jkv_file::read::<DeviceSettings>(CACHE_PATH).await {
+        let cached = match crate::binary_file::read(CACHE_PATH)
+            .await
+            .and_then(|bytes| {
+                DeviceSettings::decode(bytes.as_slice()).map_err(|error| Error {
+                    code: -EINVAL,
+                    message: alloc::format!("device settings cache: protobuf decode: {}", error),
+                })
+            })
+        {
             Ok(settings) => {
                 log::info!(
                     "device settings cache: loaded CRC 0x{:08x}",
@@ -168,7 +224,20 @@ fn load_cache(load_epoch: u64) {
 
 #[cfg(feature = "platform-zephyr")]
 pub(crate) fn set_expected_crc(expected: Option<u32>) {
-    let action = state().begin(expected.map_or(ExpectedCrc::Missing, ExpectedCrc::Value));
+    let cache = state();
+    let previous = cache.expected;
+    let received = expected.map_or(ExpectedCrc::Missing, ExpectedCrc::Value);
+    let cached_crc = cache.cached.as_ref().map(|settings| settings.crc32_hash);
+    let action = cache.update_expected(received);
+    let decision = crc_decision(previous, received, &action, cache.refresh_in_flight);
+
+    log::info!(
+        "device settings CRC: current={} new={} cached={} decision={}",
+        previous.log_value(),
+        received.log_value(),
+        optional_crc_log_value(cached_crc),
+        decision
+    );
     drive(action);
 }
 
@@ -235,8 +304,15 @@ fn drive(action: Action) {
 
 #[cfg(feature = "platform-zephyr")]
 async fn persist(settings: &DeviceSettings) -> Result<(), Error> {
-    crate::jkv_file::write(CACHE_TEMP_PATH, settings).await?;
-    crate::fs::rename(CACHE_TEMP_PATH, CACHE_PATH).await
+    crate::fs::mkdir(CACHE_DIR).await?;
+    let bytes = settings.encode_to_vec();
+    crate::binary_file::write(CACHE_TEMP_PATH, &bytes).await?;
+    crate::fs::rename(CACHE_TEMP_PATH, CACHE_PATH).await?;
+    log::info!(
+        "device settings cache: persisted refreshed settings CRC 0x{:08x}",
+        settings.crc32_hash
+    );
+    Ok(())
 }
 
 #[cfg(feature = "platform-zephyr")]
@@ -249,7 +325,20 @@ fn complete_load(load_epoch: u64, cached: Option<DeviceSettings>) {
     cache.cached = cached;
     cache.fs_loaded = true;
     cache.retry_blocked = false;
-    drive(cache.next_action());
+    let cached_crc = cache.cached.as_ref().map(|settings| settings.crc32_hash);
+    let action = cache.next_action();
+    let decision = match &action {
+        Action::Ready(_, _) => "ready",
+        Action::Refresh(_) => "refresh",
+        Action::None | Action::Load(_) => "pending",
+    };
+    log::info!(
+        "device settings cache: expected={} cached={} decision={}",
+        cache.expected.log_value(),
+        optional_crc_log_value(cached_crc),
+        decision
+    );
+    drive(action);
 }
 
 #[cfg(feature = "platform-zephyr")]
@@ -263,6 +352,12 @@ fn complete_refresh(refresh_epoch: u64, result: Result<DeviceSettings, Error>) {
     match result {
         Ok(settings) => {
             let response_matches = cache.response_matches(refresh_epoch, &settings);
+            log::info!(
+                "device settings cache: refresh received CRC 0x{:08x}, expected={}, decision={}",
+                settings.crc32_hash,
+                cache.expected.log_value(),
+                if response_matches { "ready" } else { "rejected" }
+            );
             cache.cached = Some(settings);
 
             if response_matches {
@@ -304,6 +399,43 @@ mod tests {
             crc32_hash,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn protobuf_cache_supports_full_u32_range() {
+        let original = settings(u32::MAX);
+        let encoded = original.encode_to_vec();
+        let decoded = DeviceSettings::decode(encoded.as_slice()).expect("protobuf should decode");
+
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn crc_decision_reports_unchanged_ready_and_refresh() {
+        let current = ExpectedCrc::Value(1);
+
+        assert_eq!(
+            crc_decision(current, current, &Action::None, false),
+            "unchanged"
+        );
+        assert_eq!(
+            crc_decision(
+                current,
+                ExpectedCrc::Value(2),
+                &Action::Ready(settings(2), Vec::new()),
+                false,
+            ),
+            "ready"
+        );
+        assert_eq!(
+            crc_decision(
+                current,
+                ExpectedCrc::Value(3),
+                &Action::Refresh(7),
+                true,
+            ),
+            "refresh"
+        );
     }
 
     #[test]
@@ -372,6 +504,81 @@ mod tests {
 
         state.fs_loaded = true;
         assert!(matches!(state.next_action(), Action::None));
+    }
+
+    #[test]
+    fn expected_crc_reuses_initial_in_flight_cache_load() {
+        let mut state = State::new();
+        assert!(matches!(state.begin(ExpectedCrc::Unknown), Action::Load(1)));
+
+        assert!(matches!(
+            state.update_expected(ExpectedCrc::Value(0x1234)),
+            Action::None
+        ));
+        assert_eq!(state.epoch, 1);
+        assert_eq!(state.expected, ExpectedCrc::Value(0x1234));
+        assert!(!state.fs_loaded);
+    }
+
+    #[test]
+    fn startup_preserves_expected_crc_received_before_initialization() {
+        let mut state = State::new();
+        state.expected = ExpectedCrc::Value(0x1234);
+
+        assert!(matches!(state.begin_preserving_expected(), Action::Load(1)));
+        assert_eq!(state.expected, ExpectedCrc::Value(0x1234));
+        assert!(!state.fs_loaded);
+    }
+
+    #[test]
+    fn repeated_expected_crc_is_idempotent() {
+        let mut state = State::new();
+        state.fs_loaded = true;
+        state.cached = Some(settings(0x1234));
+        state.expected = ExpectedCrc::Value(0x1234);
+        state.valid = true;
+        state.epoch = 4;
+
+        assert!(matches!(
+            state.update_expected(ExpectedCrc::Value(0x1234)),
+            Action::None
+        ));
+        assert_eq!(state.epoch, 4);
+        assert!(state.valid);
+    }
+
+    #[test]
+    fn changed_expected_crc_revalidates_loaded_ram_cache() {
+        let mut state = State::new();
+        state.fs_loaded = true;
+        state.cached = Some(settings(2));
+        state.expected = ExpectedCrc::Value(1);
+        state.valid = true;
+        state.epoch = 6;
+
+        assert!(matches!(
+            state.update_expected(ExpectedCrc::Value(2)),
+            Action::Ready(_, _)
+        ));
+        assert_eq!(state.epoch, 6);
+        assert!(state.valid);
+    }
+
+    #[test]
+    fn changed_expected_crc_does_not_duplicate_in_flight_refresh() {
+        let mut state = State::new();
+        state.fs_loaded = true;
+        state.expected = ExpectedCrc::Value(1);
+        state.refresh_in_flight = true;
+        state.epoch = 8;
+
+        assert!(matches!(
+            state.update_expected(ExpectedCrc::Value(2)),
+            Action::None
+        ));
+        assert_eq!(state.epoch, 8);
+        assert_eq!(state.expected, ExpectedCrc::Value(2));
+        assert!(state.refresh_in_flight);
     }
 
     #[test]
