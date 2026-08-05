@@ -101,11 +101,22 @@ thread_local! {
 
 pub fn init_state(cells: Vec<CellState>) {
     STATE.with(|s| {
-        *s.borrow_mut() = Some(SimulatorInner {
+        let mut slot = s.borrow_mut();
+        // Preserve live peripheral connections across a layout re-init: the
+        // barcode/keypad senders and the scanner power state belong to the
+        // running app (subscribed once in `app_main`), not to the locker
+        // layout. Only the cell list changes when the active layout switches.
+        // This mirrors the UI callbacks, which live in separate thread-locals
+        // for the same reason.
+        let (scanner, keypad_tx, barcode_tx) = match slot.take() {
+            Some(prev) => (prev.scanner, prev.keypad_tx, prev.barcode_tx),
+            None => (ScannerState { active: false }, None, None),
+        };
+        *slot = Some(SimulatorInner {
             cells,
-            scanner: ScannerState { active: false },
-            keypad_tx: None,
-            barcode_tx: None,
+            scanner,
+            keypad_tx,
+            barcode_tx,
         });
     });
 }
