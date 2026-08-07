@@ -27,6 +27,7 @@ use std::pin::Pin;
 use std::path::Path;
 use std::sync::RwLock;
 use std::task::{Context, Poll};
+#[cfg(feature = "simulator")]
 use std::time::Duration;
 
 pub type LockStatuses = Vec<LockStatus>;
