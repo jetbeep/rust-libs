@@ -97,6 +97,44 @@ thread_local! {
         const { RefCell::new(None) };
     static DOOR_OPENED_NOTIFIER: RefCell<Option<Box<dyn Fn(u32, u32)>>> =
         const { RefCell::new(None) };
+    // Configurable "physical world" latency applied before servicing
+    // lock_open/lock_statuses_get, so the simulator behaves like real
+    // hardware (which does not answer these calls instantly). Independent
+    // of `STATE` so it survives layout re-inits.
+    static PHYSICAL_TIMING: RefCell<PhysicalTiming> =
+        RefCell::new(PhysicalTiming::default());
+}
+
+/// Simulated hardware latency for door-open and cell-door-status bus calls.
+/// Defaults mirror the timing of real locker hardware; both are adjustable
+/// at runtime from the app's Settings screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalTiming {
+    /// Delay before `lock_open` resolves (ms). Default: 1200.
+    pub door_open_ms: u32,
+    /// Delay before `lock_statuses_get` resolves (ms). Default: 300.
+    pub cell_status_ms: u32,
+}
+
+impl Default for PhysicalTiming {
+    fn default() -> Self {
+        Self {
+            door_open_ms: 1200,
+            cell_status_ms: 300,
+        }
+    }
+}
+
+/// Returns the current simulated physical-world timing.
+pub fn get_physical_timing() -> PhysicalTiming {
+    PHYSICAL_TIMING.with(|t| *t.borrow())
+}
+
+/// Updates the simulated physical-world timing (e.g. from the app's
+/// Settings screen). Takes effect on the next `lock_open` /
+/// `lock_statuses_get` call.
+pub fn set_physical_timing(timing: PhysicalTiming) {
+    PHYSICAL_TIMING.with(|t| *t.borrow_mut() = timing);
 }
 
 pub fn init_state(cells: Vec<CellState>) {

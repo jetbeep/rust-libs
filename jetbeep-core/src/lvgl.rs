@@ -203,6 +203,7 @@ pub struct LvIndev {
 }
 
 // Constants
+pub const LV_OBJ_FLAG_HIDDEN: u32 = 1 << 0;
 pub const LV_OBJ_FLAG_SCROLLABLE: u32 = 1 << 4;
 pub const LV_OBJ_FLAG_CLICKABLE: u32 = 1 << 1;
 pub const LV_OBJ_FLAG_CLICK_FOCUSABLE: u32 = 1 << 2;

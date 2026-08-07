@@ -44,7 +44,25 @@ struct ModalUi {
     root: *mut lv_obj_t,
     textarea: *mut lv_obj_t,
     error: *mut lv_obj_t,
+    tab_config_btn: *mut lv_obj_t,
+    tab_timing_btn: *mut lv_obj_t,
+    config_title: *mut lv_obj_t,
+    util_row: *mut lv_obj_t,
+    phys_title: *mut lv_obj_t,
+    door_open_row: *mut lv_obj_t,
+    cell_status_row: *mut lv_obj_t,
+    door_open_label: *mut lv_obj_t,
+    cell_status_label: *mut lv_obj_t,
+    door_open_ms: std::cell::Cell<u32>,
+    cell_status_ms: std::cell::Cell<u32>,
+    /// `false` = "Config" (user_params JSON) tab active, `true` = "Timing"
+    /// (physical world simulation) tab active.
+    showing_timing_tab: std::cell::Cell<bool>,
 }
+
+/// Step size and clamp for the physical-timing steppers (ms).
+const PHYS_MS_STEP: u32 = 100;
+const PHYS_MS_MAX: u32 = 10_000;
 
 // Store UI refs in thread-local for refresh callbacks
 std::thread_local! {
@@ -905,11 +923,13 @@ fn open_settings_modal() {
     lv_obj_set_style_pad_all(&backdrop, 0, 0);
     lv_obj_set_style_radius(&backdrop, 0, 0);
 
-    // Centered editor panel, clamped to fit smaller windows.
+    // Centered editor panel, clamped to fit smaller windows. `TAB_BAR_H`
+    // reserves space for the "Config" / "Timing" tab bar at the top.
+    const TAB_BAR_H: i32 = 40;
     let panel_w = 520.min(win_w - 20);
-    let panel_h = 470.min(win_h - 20);
+    let panel_h = (470 + TAB_BAR_H).min(win_h - 20);
     let inner_w = panel_w - 30;
-    let ta_h = panel_h - 205;
+    let ta_h = panel_h - 205 - TAB_BAR_H;
     let panel = lv_obj_create(&backdrop);
     lv_obj_set_size(&panel, panel_w, panel_h);
     lv_obj_align(&panel, LvAlign::Center, 0, 0);
@@ -923,11 +943,45 @@ fn open_settings_modal() {
     lv_obj_set_style_pad_row(&panel, 10, 0);
     lv_obj_set_flex_flow(&panel, LV_FLEX_FLOW_COLUMN);
 
-    let title = lv_label_create(&panel);
-    lv_label_set_text(&title, "Edit user_params (JSON)");
-    lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xEEEEEE), 0);
-    lv_obj_set_style_text_font(&title, &lv_font_montserrat_14(), 0);
-    std::mem::forget(title);
+    // Tab bar: "Config" (user_params JSON) / "Timing" (physical world
+    // simulation), so hardware-latency settings are visually separated from
+    // the raw locker JSON config.
+    let tab_row = lv_obj_create(&panel);
+    lv_obj_set_width(&tab_row, inner_w);
+    lv_obj_set_height(&tab_row, TAB_BAR_H - 6);
+    lv_obj_set_style_bg_opa(&tab_row, 0, 0);
+    lv_obj_set_style_border_width(&tab_row, 0, 0);
+    lv_obj_set_style_pad_all(&tab_row, 0, 0);
+    lv_obj_set_style_pad_column(&tab_row, 8, 0);
+    lv_obj_set_flex_flow(&tab_row, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(&tab_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    let tab_config_btn = lv_button_create(&tab_row);
+    lv_obj_set_size(&tab_config_btn, 140, TAB_BAR_H - 6);
+    lv_obj_set_style_radius(&tab_config_btn, 6, 0);
+    let tab_config_lbl = lv_label_create(&tab_config_btn);
+    lv_label_set_text(&tab_config_lbl, "Config");
+    lv_obj_align(&tab_config_lbl, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&tab_config_lbl, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_add_event_cb(&tab_config_btn, modal_tab_config_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+    std::mem::forget(tab_config_lbl);
+
+    let tab_timing_btn = lv_button_create(&tab_row);
+    lv_obj_set_size(&tab_timing_btn, 140, TAB_BAR_H - 6);
+    lv_obj_set_style_radius(&tab_timing_btn, 6, 0);
+    let tab_timing_lbl = lv_label_create(&tab_timing_btn);
+    lv_label_set_text(&tab_timing_lbl, "Timing");
+    lv_obj_align(&tab_timing_lbl, LvAlign::Center, 0, 0);
+    lv_obj_set_style_text_color(&tab_timing_lbl, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_add_event_cb(&tab_timing_btn, modal_tab_timing_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
+    std::mem::forget(tab_timing_lbl);
+    std::mem::forget(tab_row);
+
+    // ── "Config" tab: raw user_params JSON editor ──────────────────────
+    let config_title = lv_label_create(&panel);
+    lv_label_set_text(&config_title, "Edit user_params (JSON)");
+    lv_obj_set_style_text_color(&config_title, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&config_title, &lv_font_montserrat_14(), 0);
 
     let ta = lv_textarea_create(&panel);
     lv_obj_set_size(&ta, inner_w, ta_h);
@@ -957,7 +1011,34 @@ fn open_settings_modal() {
     make_modal_button(&util_row, 100, 0x37474F, "Paste", modal_paste_cb);
     make_modal_button(&util_row, 100, 0x37474F, "Copy", modal_copy_cb);
     make_modal_button(&util_row, 100, 0x6D4C41, "Clear", modal_clear_cb);
-    std::mem::forget(util_row);
+
+    // ── "Timing" tab: physical world simulation (door-open / cell-status
+    // hardware latency), hidden until the user switches tabs ─────────────
+    let timing = state::get_physical_timing();
+    let phys_title = lv_label_create(&panel);
+    lv_label_set_text(&phys_title, "Physical world simulation");
+    lv_obj_set_style_text_color(&phys_title, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&phys_title, &lv_font_montserrat_14(), 0);
+    lv_obj_add_flag(&phys_title, LV_OBJ_FLAG_HIDDEN);
+
+    let (door_open_row, door_open_label) = make_stepper_row(
+        &panel,
+        inner_w,
+        "Door opening time (ms)",
+        timing.door_open_ms,
+        stepper_door_dec_cb,
+        stepper_door_inc_cb,
+    );
+    lv_obj_add_flag(&door_open_row, LV_OBJ_FLAG_HIDDEN);
+    let (cell_status_row, cell_status_label) = make_stepper_row(
+        &panel,
+        inner_w,
+        "Get cell door status (ms)",
+        timing.cell_status_ms,
+        stepper_cell_dec_cb,
+        stepper_cell_inc_cb,
+    );
+    lv_obj_add_flag(&cell_status_row, LV_OBJ_FLAG_HIDDEN);
 
     let err = lv_label_create(&panel);
     lv_label_set_text(&err, "");
@@ -999,11 +1080,35 @@ fn open_settings_modal() {
             root: backdrop.obj,
             textarea: ta.obj,
             error: err.obj,
+            tab_config_btn: tab_config_btn.obj,
+            tab_timing_btn: tab_timing_btn.obj,
+            config_title: config_title.obj,
+            util_row: util_row.obj,
+            phys_title: phys_title.obj,
+            door_open_row: door_open_row.obj,
+            cell_status_row: cell_status_row.obj,
+            door_open_label: door_open_label.obj,
+            cell_status_label: cell_status_label.obj,
+            door_open_ms: std::cell::Cell::new(timing.door_open_ms),
+            cell_status_ms: std::cell::Cell::new(timing.cell_status_ms),
+            showing_timing_tab: std::cell::Cell::new(false),
         });
     });
+    // Config tab is active by default; style the tab buttons accordingly.
+    set_tab_button_active(&tab_config_btn, true);
+    set_tab_button_active(&tab_timing_btn, false);
 
     std::mem::forget(ta);
     std::mem::forget(err);
+    std::mem::forget(tab_config_btn);
+    std::mem::forget(tab_timing_btn);
+    std::mem::forget(config_title);
+    std::mem::forget(util_row);
+    std::mem::forget(phys_title);
+    std::mem::forget(door_open_row);
+    std::mem::forget(cell_status_row);
+    std::mem::forget(door_open_label);
+    std::mem::forget(cell_status_label);
     std::mem::forget(save_btn);
     std::mem::forget(save_lbl);
     std::mem::forget(cancel_btn);
@@ -1015,12 +1120,16 @@ fn open_settings_modal() {
 }
 
 unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
-    let (text, err_ptr) = match MODAL.with(|m| {
+    let (text, err_ptr, timing) = match MODAL.with(|m| {
         m.borrow().as_ref().map(|modal| {
             let ta = LvObj { obj: modal.textarea };
             let text = lv_textarea_get_text(&ta);
             std::mem::forget(ta);
-            (text, modal.error)
+            let timing = state::PhysicalTiming {
+                door_open_ms: modal.door_open_ms.get(),
+                cell_status_ms: modal.cell_status_ms.get(),
+            };
+            (text, modal.error, timing)
         })
     }) {
         Some(v) => v,
@@ -1029,6 +1138,7 @@ unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
 
     match super::config_editor::save_user_params_json(&text) {
         Ok(()) => {
+            state::set_physical_timing(timing);
             super::config_editor::trigger_profile_reload();
             close_settings_modal();
         }
@@ -1042,6 +1152,176 @@ unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
 
 unsafe extern "C" fn modal_cancel_cb(_e: *mut lv_event_t) {
     close_settings_modal();
+}
+
+/// Create a labeled row with `-`/`+` steppers for one physical-timing value,
+/// seeded from `initial_ms`. Returns `(row, value_label)`: the row so callers
+/// can hide/show the whole control when switching tabs, and the value label
+/// so stepper callbacks can refresh its text.
+fn make_stepper_row(
+    panel: &LvObj,
+    inner_w: i32,
+    label_text: &str,
+    initial_ms: u32,
+    dec_cb: lv_event_cb_t,
+    inc_cb: lv_event_cb_t,
+) -> (LvObj, LvObj) {
+    let row = lv_obj_create(panel);
+    lv_obj_set_width(&row, inner_w);
+    lv_obj_set_height(&row, 34);
+    lv_obj_set_style_bg_opa(&row, 0, 0);
+    lv_obj_set_style_border_width(&row, 0, 0);
+    lv_obj_set_style_pad_all(&row, 0, 0);
+    lv_obj_set_style_pad_column(&row, 8, 0);
+    lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(
+        &row,
+        LV_FLEX_ALIGN_START,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+    );
+    lv_obj_remove_flag(&row, LV_OBJ_FLAG_SCROLLABLE);
+
+    let title = lv_label_create(&row);
+    lv_label_set_text(&title, label_text);
+    lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
+    // Grow to fill remaining space so the stepper lands at the row's right edge.
+    lv_obj_set_flex_grow(&title, 1);
+    std::mem::forget(title);
+
+    let stepper = lv_obj_create(&row);
+    lv_obj_set_height(&stepper, 34);
+    lv_obj_set_width(&stepper, 150);
+    lv_obj_set_style_bg_opa(&stepper, 0, 0);
+    lv_obj_set_style_border_width(&stepper, 0, 0);
+    lv_obj_set_style_pad_all(&stepper, 0, 0);
+    lv_obj_set_style_pad_column(&stepper, 8, 0);
+    lv_obj_set_flex_flow(&stepper, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(
+        &stepper,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+    );
+    lv_obj_remove_flag(&stepper, LV_OBJ_FLAG_SCROLLABLE);
+
+    make_modal_button(&stepper, 34, 0x37474F, "-", dec_cb);
+
+    let value_label = lv_label_create(&stepper);
+    lv_label_set_text(&value_label, &initial_ms.to_string());
+    lv_obj_set_style_text_color(&value_label, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_width(&value_label, 50);
+
+    make_modal_button(&stepper, 34, 0x37474F, "+", inc_cb);
+
+    std::mem::forget(stepper);
+    (row, value_label)
+}
+
+/// Highlight the active tab button (accent bg) vs. the inactive one (muted bg).
+fn set_tab_button_active(btn: &LvObj, active: bool) {
+    let color = if active { 0x2E7D32 } else { 0x37474F };
+    lv_obj_set_style_bg_color(btn, lv_color_hex_fn(color), 0);
+}
+
+/// Show the "Config" (user_params JSON) tab and hide the "Timing" tab.
+unsafe extern "C" fn modal_tab_config_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            if !modal.showing_timing_tab.get() {
+                return;
+            }
+            modal.showing_timing_tab.set(false);
+            set_tab_visibility(modal, false);
+        }
+    });
+}
+
+/// Show the "Timing" (physical world simulation) tab and hide "Config".
+unsafe extern "C" fn modal_tab_timing_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            if modal.showing_timing_tab.get() {
+                return;
+            }
+            modal.showing_timing_tab.set(true);
+            set_tab_visibility(modal, true);
+        }
+    });
+}
+
+/// Toggle widget visibility and tab button styling for `showing_timing`.
+fn set_tab_visibility(modal: &ModalUi, showing_timing: bool) {
+    let config_widgets = [modal.config_title, modal.textarea, modal.util_row];
+    let timing_widgets = [modal.phys_title, modal.door_open_row, modal.cell_status_row];
+    for ptr in config_widgets {
+        let obj = LvObj { obj: ptr };
+        if showing_timing {
+            lv_obj_add_flag(&obj, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(&obj, LV_OBJ_FLAG_HIDDEN);
+        }
+        std::mem::forget(obj);
+    }
+    for ptr in timing_widgets {
+        let obj = LvObj { obj: ptr };
+        if showing_timing {
+            lv_obj_remove_flag(&obj, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(&obj, LV_OBJ_FLAG_HIDDEN);
+        }
+        std::mem::forget(obj);
+    }
+    let config_btn = LvObj { obj: modal.tab_config_btn };
+    let timing_btn = LvObj { obj: modal.tab_timing_btn };
+    set_tab_button_active(&config_btn, !showing_timing);
+    set_tab_button_active(&timing_btn, showing_timing);
+    std::mem::forget(config_btn);
+    std::mem::forget(timing_btn);
+}
+
+
+/// Adjust one of the modal's in-memory timing values by `delta_ms` (clamped
+/// to `[0, PHYS_MS_MAX]`) and refresh its label. `delta_ms` may be negative.
+fn adjust_stepper(value: &std::cell::Cell<u32>, label_ptr: *mut lv_obj_t, delta_ms: i32) {
+    let current = value.get() as i32;
+    let next = (current + delta_ms).clamp(0, PHYS_MS_MAX as i32) as u32;
+    value.set(next);
+    let label = LvObj { obj: label_ptr };
+    lv_label_set_text(&label, &next.to_string());
+    std::mem::forget(label);
+}
+
+unsafe extern "C" fn stepper_door_dec_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper(&modal.door_open_ms, modal.door_open_label, -(PHYS_MS_STEP as i32));
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_door_inc_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper(&modal.door_open_ms, modal.door_open_label, PHYS_MS_STEP as i32);
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_cell_dec_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper(&modal.cell_status_ms, modal.cell_status_label, -(PHYS_MS_STEP as i32));
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_cell_inc_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper(&modal.cell_status_ms, modal.cell_status_label, PHYS_MS_STEP as i32);
+        }
+    });
 }
 
 /// Create a labeled button inside a modal row and wire its click callback.
