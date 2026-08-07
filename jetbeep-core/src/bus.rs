@@ -27,6 +27,7 @@ use std::pin::Pin;
 use std::path::Path;
 use std::sync::RwLock;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 pub type LockStatuses = Vec<LockStatus>;
 pub type ModemInfo = PollModemGetInfoResponse;
@@ -418,13 +419,43 @@ fn normalize_keypad_alphabet_enum_strings(root: &mut serde_json::Value) {
 pub use crate::simulator::state::KeypadKey;
 
 #[cfg(feature = "simulator")]
+pub use crate::simulator::state::PhysicalTiming;
+
+#[cfg(feature = "simulator")]
 pub async fn lock_open(board_id: u32, lock_id: u32) -> Result<(), Error> {
+    let delay_ms = state::get_physical_timing().door_open_ms;
+    if delay_ms > 0 {
+        crate::workq::delay(Duration::from_millis(delay_ms as u64)).await;
+    }
     state::lock_open(board_id, lock_id)
 }
 
 #[cfg(feature = "simulator")]
 pub async fn lock_statuses_get(board_id: u32) -> Result<LockStatuses, Error> {
+    let delay_ms = state::get_physical_timing().cell_status_ms;
+    if delay_ms > 0 {
+        crate::workq::delay(Duration::from_millis(delay_ms as u64)).await;
+    }
     state::lock_statuses_get(board_id)
+}
+
+/// Returns the simulator's current simulated door-open / cell-status
+/// hardware latency (ms). Used by the app's Settings screen to seed its
+/// "Physical world simulation" fields.
+#[cfg(feature = "simulator")]
+pub fn get_physical_sim_timing() -> PhysicalTiming {
+    state::get_physical_timing()
+}
+
+/// Updates the simulator's simulated door-open / cell-status hardware
+/// latency (ms). Called from the app's Settings screen when the user saves
+/// new values.
+#[cfg(feature = "simulator")]
+pub fn set_physical_sim_timing(door_open_ms: u32, cell_status_ms: u32) {
+    state::set_physical_timing(PhysicalTiming {
+        door_open_ms,
+        cell_status_ms,
+    });
 }
 
 #[cfg(feature = "simulator")]
