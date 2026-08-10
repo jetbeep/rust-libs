@@ -55,6 +55,18 @@ struct ModalUi {
     cell_status_label: *mut lv_obj_t,
     door_open_ms: std::cell::Cell<u32>,
     cell_status_ms: std::cell::Cell<u32>,
+    // Network-connectivity simulation widgets (also on the Timing tab).
+    net_title: *mut lv_obj_t,
+    net_mode_row: *mut lv_obj_t,
+    net_mode_dropdown: *mut lv_obj_t,
+    net_fail_rate_row: *mut lv_obj_t,
+    net_fail_rate_label: *mut lv_obj_t,
+    net_fail_kind_row: *mut lv_obj_t,
+    net_fail_kind_dropdown: *mut lv_obj_t,
+    net_extra_ms_row: *mut lv_obj_t,
+    net_extra_ms_label: *mut lv_obj_t,
+    net_fail_rate: std::cell::Cell<u32>,
+    net_extra_ms: std::cell::Cell<u32>,
     /// `false` = "Config" (user_params JSON) tab active, `true` = "Timing"
     /// (physical world simulation) tab active.
     showing_timing_tab: std::cell::Cell<bool>,
@@ -63,6 +75,10 @@ struct ModalUi {
 /// Step size and clamp for the physical-timing steppers (ms).
 const PHYS_MS_STEP: u32 = 100;
 const PHYS_MS_MAX: u32 = 10_000;
+
+/// Step size and clamp for the network failure-rate stepper (percent).
+const FAIL_PCT_STEP: u32 = 10;
+const FAIL_PCT_MAX: u32 = 100;
 
 // Store UI refs in thread-local for refresh callbacks
 std::thread_local! {
@@ -1040,6 +1056,53 @@ fn open_settings_modal() {
     );
     lv_obj_add_flag(&cell_status_row, LV_OBJ_FLAG_HIDDEN);
 
+    // Network-connectivity simulation (applies to `server_request`, separate
+    // from the physical door/status latency above). Hidden with the tab.
+    let net_sim = state::get_network_sim();
+    let net_title = lv_label_create(&panel);
+    lv_label_set_text(&net_title, "Network simulation");
+    lv_obj_set_style_text_color(&net_title, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&net_title, &lv_font_montserrat_14(), 0);
+    lv_obj_add_flag(&net_title, LV_OBJ_FLAG_HIDDEN);
+
+    let (net_mode_row, net_mode_dropdown) = make_dropdown_row(
+        &panel,
+        inner_w,
+        "Connection mode",
+        &state::NetworkMode::ui_options(),
+        net_sim.mode.to_index(),
+    );
+    lv_obj_add_flag(&net_mode_row, LV_OBJ_FLAG_HIDDEN);
+
+    let (net_fail_rate_row, net_fail_rate_label) = make_stepper_row(
+        &panel,
+        inner_w,
+        "Request failure rate (%)",
+        net_sim.failure_rate,
+        stepper_fail_rate_dec_cb,
+        stepper_fail_rate_inc_cb,
+    );
+    lv_obj_add_flag(&net_fail_rate_row, LV_OBJ_FLAG_HIDDEN);
+
+    let (net_fail_kind_row, net_fail_kind_dropdown) = make_dropdown_row(
+        &panel,
+        inner_w,
+        "Failure kind",
+        &state::FailureKind::ui_options(),
+        net_sim.failure_kind.to_index(),
+    );
+    lv_obj_add_flag(&net_fail_kind_row, LV_OBJ_FLAG_HIDDEN);
+
+    let (net_extra_ms_row, net_extra_ms_label) = make_stepper_row(
+        &panel,
+        inner_w,
+        "Extra latency (ms)",
+        net_sim.extra_latency_ms,
+        stepper_net_extra_dec_cb,
+        stepper_net_extra_inc_cb,
+    );
+    lv_obj_add_flag(&net_extra_ms_row, LV_OBJ_FLAG_HIDDEN);
+
     let err = lv_label_create(&panel);
     lv_label_set_text(&err, "");
     lv_obj_set_style_text_color(&err, lv_color_hex_fn(0xE57373), 0);
@@ -1091,6 +1154,17 @@ fn open_settings_modal() {
             cell_status_label: cell_status_label.obj,
             door_open_ms: std::cell::Cell::new(timing.door_open_ms),
             cell_status_ms: std::cell::Cell::new(timing.cell_status_ms),
+            net_title: net_title.obj,
+            net_mode_row: net_mode_row.obj,
+            net_mode_dropdown: net_mode_dropdown.obj,
+            net_fail_rate_row: net_fail_rate_row.obj,
+            net_fail_rate_label: net_fail_rate_label.obj,
+            net_fail_kind_row: net_fail_kind_row.obj,
+            net_fail_kind_dropdown: net_fail_kind_dropdown.obj,
+            net_extra_ms_row: net_extra_ms_row.obj,
+            net_extra_ms_label: net_extra_ms_label.obj,
+            net_fail_rate: std::cell::Cell::new(net_sim.failure_rate),
+            net_extra_ms: std::cell::Cell::new(net_sim.extra_latency_ms),
             showing_timing_tab: std::cell::Cell::new(false),
         });
     });
@@ -1109,6 +1183,15 @@ fn open_settings_modal() {
     std::mem::forget(cell_status_row);
     std::mem::forget(door_open_label);
     std::mem::forget(cell_status_label);
+    std::mem::forget(net_title);
+    std::mem::forget(net_mode_row);
+    std::mem::forget(net_mode_dropdown);
+    std::mem::forget(net_fail_rate_row);
+    std::mem::forget(net_fail_rate_label);
+    std::mem::forget(net_fail_kind_row);
+    std::mem::forget(net_fail_kind_dropdown);
+    std::mem::forget(net_extra_ms_row);
+    std::mem::forget(net_extra_ms_label);
     std::mem::forget(save_btn);
     std::mem::forget(save_lbl);
     std::mem::forget(cancel_btn);
@@ -1120,7 +1203,7 @@ fn open_settings_modal() {
 }
 
 unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
-    let (text, err_ptr, timing) = match MODAL.with(|m| {
+    let (text, err_ptr, timing, net_sim) = match MODAL.with(|m| {
         m.borrow().as_ref().map(|modal| {
             let ta = LvObj { obj: modal.textarea };
             let text = lv_textarea_get_text(&ta);
@@ -1129,7 +1212,17 @@ unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
                 door_open_ms: modal.door_open_ms.get(),
                 cell_status_ms: modal.cell_status_ms.get(),
             };
-            (text, modal.error, timing)
+            let mode_dd = LvObj { obj: modal.net_mode_dropdown };
+            let kind_dd = LvObj { obj: modal.net_fail_kind_dropdown };
+            let net_sim = state::NetworkSim {
+                mode: state::NetworkMode::from_index(lv_dropdown_get_selected_idx(&mode_dd)),
+                failure_rate: modal.net_fail_rate.get(),
+                failure_kind: state::FailureKind::from_index(lv_dropdown_get_selected_idx(&kind_dd)),
+                extra_latency_ms: modal.net_extra_ms.get(),
+            };
+            std::mem::forget(mode_dd);
+            std::mem::forget(kind_dd);
+            (text, modal.error, timing, net_sim)
         })
     }) {
         Some(v) => v,
@@ -1139,6 +1232,7 @@ unsafe extern "C" fn modal_save_cb(_e: *mut lv_event_t) {
     match super::config_editor::save_user_params_json(&text) {
         Ok(()) => {
             state::set_physical_timing(timing);
+            state::set_network_sim(net_sim);
             super::config_editor::trigger_profile_reload();
             close_settings_modal();
         }
@@ -1218,6 +1312,45 @@ fn make_stepper_row(
     (row, value_label)
 }
 
+/// Create a labeled dropdown row on the modal panel. Returns the row and the
+/// dropdown object (kept so the value can be read back at save time).
+fn make_dropdown_row(
+    panel: &LvObj,
+    inner_w: i32,
+    label_text: &str,
+    options: &str,
+    selected_idx: u32,
+) -> (LvObj, LvObj) {
+    let row = lv_obj_create(panel);
+    lv_obj_set_width(&row, inner_w);
+    lv_obj_set_height(&row, 40);
+    lv_obj_set_style_bg_opa(&row, 0, 0);
+    lv_obj_set_style_border_width(&row, 0, 0);
+    lv_obj_set_style_pad_all(&row, 0, 0);
+    lv_obj_set_style_pad_column(&row, 8, 0);
+    lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(
+        &row,
+        LV_FLEX_ALIGN_START,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_CENTER,
+    );
+    lv_obj_remove_flag(&row, LV_OBJ_FLAG_SCROLLABLE);
+
+    let title = lv_label_create(&row);
+    lv_label_set_text(&title, label_text);
+    lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
+    lv_obj_set_flex_grow(&title, 1);
+    std::mem::forget(title);
+
+    let dd = lv_dropdown_create_obj(&row);
+    lv_obj_set_width(&dd, 190);
+    lv_dropdown_set_options_str(&dd, options);
+    lv_dropdown_set_selected_idx(&dd, selected_idx);
+
+    (row, dd)
+}
+
 /// Highlight the active tab button (accent bg) vs. the inactive one (muted bg).
 fn set_tab_button_active(btn: &LvObj, active: bool) {
     let color = if active { 0x2E7D32 } else { 0x37474F };
@@ -1253,7 +1386,16 @@ unsafe extern "C" fn modal_tab_timing_cb(_e: *mut lv_event_t) {
 /// Toggle widget visibility and tab button styling for `showing_timing`.
 fn set_tab_visibility(modal: &ModalUi, showing_timing: bool) {
     let config_widgets = [modal.config_title, modal.textarea, modal.util_row];
-    let timing_widgets = [modal.phys_title, modal.door_open_row, modal.cell_status_row];
+    let timing_widgets = [
+        modal.phys_title,
+        modal.door_open_row,
+        modal.cell_status_row,
+        modal.net_title,
+        modal.net_mode_row,
+        modal.net_fail_rate_row,
+        modal.net_fail_kind_row,
+        modal.net_extra_ms_row,
+    ];
     for ptr in config_widgets {
         let obj = LvObj { obj: ptr };
         if showing_timing {
@@ -1284,12 +1426,75 @@ fn set_tab_visibility(modal: &ModalUi, showing_timing: bool) {
 /// Adjust one of the modal's in-memory timing values by `delta_ms` (clamped
 /// to `[0, PHYS_MS_MAX]`) and refresh its label. `delta_ms` may be negative.
 fn adjust_stepper(value: &std::cell::Cell<u32>, label_ptr: *mut lv_obj_t, delta_ms: i32) {
+    adjust_stepper_clamped(value, label_ptr, delta_ms, PHYS_MS_MAX);
+}
+
+/// Like [`adjust_stepper`] but with an explicit upper clamp, for steppers
+/// whose range differs from the physical-timing default (e.g. percentages).
+fn adjust_stepper_clamped(
+    value: &std::cell::Cell<u32>,
+    label_ptr: *mut lv_obj_t,
+    delta: i32,
+    max: u32,
+) {
     let current = value.get() as i32;
-    let next = (current + delta_ms).clamp(0, PHYS_MS_MAX as i32) as u32;
+    let next = (current + delta).clamp(0, max as i32) as u32;
     value.set(next);
     let label = LvObj { obj: label_ptr };
     lv_label_set_text(&label, &next.to_string());
     std::mem::forget(label);
+}
+
+unsafe extern "C" fn stepper_fail_rate_dec_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper_clamped(
+                &modal.net_fail_rate,
+                modal.net_fail_rate_label,
+                -(FAIL_PCT_STEP as i32),
+                FAIL_PCT_MAX,
+            );
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_fail_rate_inc_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper_clamped(
+                &modal.net_fail_rate,
+                modal.net_fail_rate_label,
+                FAIL_PCT_STEP as i32,
+                FAIL_PCT_MAX,
+            );
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_net_extra_dec_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper_clamped(
+                &modal.net_extra_ms,
+                modal.net_extra_ms_label,
+                -(PHYS_MS_STEP as i32),
+                state::NETWORK_EXTRA_LATENCY_MAX,
+            );
+        }
+    });
+}
+
+unsafe extern "C" fn stepper_net_extra_inc_cb(_e: *mut lv_event_t) {
+    MODAL.with(|m| {
+        if let Some(modal) = m.borrow().as_ref() {
+            adjust_stepper_clamped(
+                &modal.net_extra_ms,
+                modal.net_extra_ms_label,
+                PHYS_MS_STEP as i32,
+                state::NETWORK_EXTRA_LATENCY_MAX,
+            );
+        }
+    });
 }
 
 unsafe extern "C" fn stepper_door_dec_cb(_e: *mut lv_event_t) {

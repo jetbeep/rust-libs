@@ -103,6 +103,14 @@ thread_local! {
     // of `STATE` so it survives layout re-inits.
     static PHYSICAL_TIMING: RefCell<PhysicalTiming> =
         RefCell::new(PhysicalTiming::default());
+    // Configurable network-connectivity simulation applied before servicing
+    // outbound `server_request` calls. Independent of `PHYSICAL_TIMING` (which
+    // models lock hardware latency) and of `STATE` so it survives layout
+    // re-inits.
+    static NETWORK_SIM: RefCell<NetworkSim> = RefCell::new(NetworkSim::default());
+    // Tiny xorshift PRNG state for jitter + failure rolls (no `rand` dep in
+    // scope). Seeded lazily from a monotonic counter on first use.
+    static NET_RNG: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Simulated hardware latency for door-open and cell-door-status bus calls.
@@ -135,6 +143,247 @@ pub fn get_physical_timing() -> PhysicalTiming {
 /// `lock_statuses_get` call.
 pub fn set_physical_timing(timing: PhysicalTiming) {
     PHYSICAL_TIMING.with(|t| *t.borrow_mut() = timing);
+}
+
+/// Base network latency profile applied to outbound `server_request` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkMode {
+    /// No added latency.
+    Normal,
+    /// Moderate mobile latency (~600 ms ± 400).
+    Mobile,
+    /// Heavy 2G-style latency (~2500 ms ± 1000).
+    Slow,
+    /// Every request fails immediately with a connectivity error.
+    Offline,
+}
+
+impl NetworkMode {
+    /// All modes in dropdown selection-index order. Single source of truth for
+    /// the UI options and the index round-trip below.
+    pub const ALL: [NetworkMode; 4] = [
+        NetworkMode::Normal,
+        NetworkMode::Mobile,
+        NetworkMode::Slow,
+        NetworkMode::Offline,
+    ];
+
+    /// Human-readable label used by the simulator UI dropdown.
+    pub fn label(&self) -> &'static str {
+        match self {
+            NetworkMode::Normal => "Normal",
+            NetworkMode::Mobile => "Mobile",
+            NetworkMode::Slow => "Slow / 2G",
+            NetworkMode::Offline => "Offline",
+        }
+    }
+
+    /// UI dropdown options, newline-separated, in selection-index order.
+    /// Derived from [`NetworkMode::ALL`]/[`NetworkMode::label`] so the labels
+    /// stay the single source of truth.
+    pub fn ui_options() -> String {
+        Self::ALL
+            .iter()
+            .map(|m| m.label())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Map a dropdown selection index back to a mode. Order matches
+    /// [`NetworkMode::ALL`]; out-of-range indices fall back to `Normal`.
+    pub fn from_index(idx: u32) -> Self {
+        Self::ALL
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(NetworkMode::Normal)
+    }
+
+    /// Dropdown selection index for this mode.
+    pub fn to_index(self) -> u32 {
+        Self::ALL.iter().position(|&m| m == self).unwrap_or(0) as u32
+    }
+
+    /// Base delay (ms) and jitter amplitude (± ms) for this mode.
+    fn base_delay(self) -> (u32, u32) {
+        match self {
+            NetworkMode::Normal => (0, 0),
+            NetworkMode::Mobile => (600, 400),
+            NetworkMode::Slow => (2500, 1000),
+            NetworkMode::Offline => (0, 0),
+        }
+    }
+}
+
+/// Which error a simulated failed `server_request` returns, so the app's
+/// error-handling paths can be exercised independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    Timeout,
+    ServerError,
+    BadRequest,
+}
+
+impl FailureKind {
+    /// All kinds in dropdown selection-index order. Single source of truth for
+    /// the UI options and the index round-trip below.
+    pub const ALL: [FailureKind; 3] = [
+        FailureKind::Timeout,
+        FailureKind::ServerError,
+        FailureKind::BadRequest,
+    ];
+
+    /// Human-readable label used by the simulator UI dropdown.
+    pub fn label(&self) -> &'static str {
+        match self {
+            FailureKind::Timeout => "Timeout",
+            FailureKind::ServerError => "Server error (5xx)",
+            FailureKind::BadRequest => "Bad request (4xx)",
+        }
+    }
+
+    /// UI dropdown options, newline-separated, in selection-index order.
+    /// Derived from [`FailureKind::ALL`]/[`FailureKind::label`] so the labels
+    /// stay the single source of truth.
+    pub fn ui_options() -> String {
+        Self::ALL
+            .iter()
+            .map(|k| k.label())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Map a dropdown selection index back to a kind. Order matches
+    /// [`FailureKind::ALL`]; out-of-range indices fall back to `Timeout`.
+    pub fn from_index(idx: u32) -> Self {
+        Self::ALL
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(FailureKind::Timeout)
+    }
+
+    /// Dropdown selection index for this kind.
+    pub fn to_index(self) -> u32 {
+        Self::ALL.iter().position(|&k| k == self).unwrap_or(0) as u32
+    }
+
+    /// The `Error` this failure kind produces.
+    fn error(self) -> Error {
+        match self {
+            FailureKind::Timeout => Error {
+                code: -2,
+                message: "network timeout (simulated)".to_string(),
+            },
+            FailureKind::ServerError => Error {
+                code: -1,
+                message: "server error 500 (simulated)".to_string(),
+            },
+            FailureKind::BadRequest => Error {
+                code: -1,
+                message: "bad request 400 (simulated)".to_string(),
+            },
+        }
+    }
+}
+
+/// Maximum configurable extra latency (ms) for the network simulation.
+pub const NETWORK_EXTRA_LATENCY_MAX: u32 = 10_000;
+
+/// Configurable network-connectivity simulation for outbound `server_request`
+/// calls. Independent of [`PhysicalTiming`], which models lock hardware
+/// latency. Adjustable at runtime from the simulator's Settings modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkSim {
+    /// Base latency profile (and offline short-circuit).
+    pub mode: NetworkMode,
+    /// Percentage of requests to randomly fail (0..=100). Ignored when
+    /// `mode` is `Offline` (which fails everything).
+    pub failure_rate: u32,
+    /// Which error a randomly failed request returns.
+    pub failure_kind: FailureKind,
+    /// Fixed delay (ms) added on top of the mode latency.
+    pub extra_latency_ms: u32,
+}
+
+impl Default for NetworkSim {
+    fn default() -> Self {
+        Self {
+            mode: NetworkMode::Normal,
+            failure_rate: 0,
+            failure_kind: FailureKind::Timeout,
+            extra_latency_ms: 0,
+        }
+    }
+}
+
+/// Returns the current network-connectivity simulation config.
+pub fn get_network_sim() -> NetworkSim {
+    NETWORK_SIM.with(|n| *n.borrow())
+}
+
+/// Updates the network-connectivity simulation config (e.g. from the
+/// simulator's Settings modal). Takes effect on the next `server_request`.
+pub fn set_network_sim(sim: NetworkSim) {
+    NETWORK_SIM.with(|n| *n.borrow_mut() = sim);
+}
+
+/// Advance the thread-local xorshift PRNG and return the next `u32`.
+/// Seeded lazily from a monotonic nanosecond counter on first use.
+fn net_rng_next() -> u32 {
+    NET_RNG.with(|cell| {
+        let mut x = cell.get();
+        if x == 0 {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0x9E37_79B9);
+            x = seed | 1;
+        }
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        cell.set(x);
+        x
+    })
+}
+
+/// Compute the outcome of the network simulation for one `server_request`.
+/// Returns the delay to apply (ms) and, if the request should fail, the
+/// `Error` to return instead of performing it.
+pub fn network_sim_outcome() -> (u32, Option<Error>) {
+    let sim = get_network_sim();
+
+    if sim.mode == NetworkMode::Offline {
+        return (
+            0,
+            Some(Error {
+                code: -1,
+                message: "network offline (simulated)".to_string(),
+            }),
+        );
+    }
+
+    // Base mode delay with symmetric jitter, plus the fixed extra latency.
+    let (base, jitter) = sim.mode.base_delay();
+    let delay = if jitter > 0 {
+        let span = jitter * 2 + 1;
+        let offset = (net_rng_next() % span) as i64 - jitter as i64;
+        (base as i64 + offset).max(0) as u32
+    } else {
+        base
+    }
+    .saturating_add(sim.extra_latency_ms);
+
+    // Independent fault injection.
+    let fail = if sim.failure_rate == 0 {
+        false
+    } else if sim.failure_rate >= 100 {
+        true
+    } else {
+        (net_rng_next() % 100) < sim.failure_rate
+    };
+
+    let err = if fail { Some(sim.failure_kind.error()) } else { None };
+    (delay, err)
 }
 
 pub fn init_state(cells: Vec<CellState>) {
@@ -511,5 +760,98 @@ mod tests {
         let err = lock_open(1, 1).unwrap_err();
         // Range is valid but no such cell — falls through to the original behavior.
         assert_eq!(err.code, -2);
+    }
+
+    #[test]
+    fn network_offline_always_fails_with_no_delay() {
+        set_network_sim(NetworkSim {
+            mode: NetworkMode::Offline,
+            failure_rate: 0,
+            failure_kind: FailureKind::Timeout,
+            extra_latency_ms: 5000,
+        });
+        for _ in 0..50 {
+            let (delay, err) = network_sim_outcome();
+            assert_eq!(delay, 0);
+            assert!(err.is_some());
+        }
+        set_network_sim(NetworkSim::default());
+    }
+
+    #[test]
+    fn network_failure_rate_bounds() {
+        // 0% never fails.
+        set_network_sim(NetworkSim {
+            mode: NetworkMode::Normal,
+            failure_rate: 0,
+            failure_kind: FailureKind::ServerError,
+            extra_latency_ms: 0,
+        });
+        for _ in 0..100 {
+            assert!(network_sim_outcome().1.is_none());
+        }
+        // 100% always fails.
+        set_network_sim(NetworkSim {
+            mode: NetworkMode::Normal,
+            failure_rate: 100,
+            failure_kind: FailureKind::ServerError,
+            extra_latency_ms: 0,
+        });
+        for _ in 0..100 {
+            assert!(network_sim_outcome().1.is_some());
+        }
+        set_network_sim(NetworkSim::default());
+    }
+
+    #[test]
+    fn network_normal_delay_is_extra_latency_only() {
+        set_network_sim(NetworkSim {
+            mode: NetworkMode::Normal,
+            failure_rate: 0,
+            failure_kind: FailureKind::Timeout,
+            extra_latency_ms: 750,
+        });
+        let (delay, err) = network_sim_outcome();
+        assert_eq!(delay, 750);
+        assert!(err.is_none());
+        set_network_sim(NetworkSim::default());
+    }
+
+    #[test]
+    fn network_failure_kind_maps_to_error_code() {
+        for (kind, code) in [
+            (FailureKind::Timeout, -2),
+            (FailureKind::ServerError, -1),
+            (FailureKind::BadRequest, -1),
+        ] {
+            set_network_sim(NetworkSim {
+                mode: NetworkMode::Normal,
+                failure_rate: 100,
+                failure_kind: kind,
+                extra_latency_ms: 0,
+            });
+            let err = network_sim_outcome().1.expect("should fail at 100%");
+            assert_eq!(err.code, code, "kind {:?}", kind);
+        }
+        set_network_sim(NetworkSim::default());
+    }
+
+    #[test]
+    fn network_mode_index_roundtrip() {
+        for mode in [
+            NetworkMode::Normal,
+            NetworkMode::Mobile,
+            NetworkMode::Slow,
+            NetworkMode::Offline,
+        ] {
+            assert_eq!(NetworkMode::from_index(mode.to_index()), mode);
+        }
+        for kind in [
+            FailureKind::Timeout,
+            FailureKind::ServerError,
+            FailureKind::BadRequest,
+        ] {
+            assert_eq!(FailureKind::from_index(kind.to_index()), kind);
+        }
     }
 }

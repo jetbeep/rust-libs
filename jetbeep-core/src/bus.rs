@@ -423,6 +423,9 @@ pub use crate::simulator::state::KeypadKey;
 pub use crate::simulator::state::PhysicalTiming;
 
 #[cfg(feature = "simulator")]
+pub use crate::simulator::state::{FailureKind, NetworkMode, NetworkSim};
+
+#[cfg(feature = "simulator")]
 pub async fn lock_open(board_id: u32, lock_id: u32) -> Result<(), Error> {
     let delay_ms = state::get_physical_timing().door_open_ms;
     if delay_ms > 0 {
@@ -459,6 +462,21 @@ pub fn set_physical_sim_timing(door_open_ms: u32, cell_status_ms: u32) {
     });
 }
 
+/// Returns the simulator's current network-connectivity simulation config.
+/// Used by the Settings modal to seed its "Network simulation" fields.
+#[cfg(feature = "simulator")]
+pub fn get_network_sim() -> NetworkSim {
+    state::get_network_sim()
+}
+
+/// Updates the simulator's network-connectivity simulation config. Called
+/// from the Settings modal when the user saves new values. Takes effect on
+/// the next `server_request`.
+#[cfg(feature = "simulator")]
+pub fn set_network_sim(sim: NetworkSim) {
+    state::set_network_sim(sim);
+}
+
 #[cfg(feature = "simulator")]
 pub async fn barcode_scanner_start() -> Result<(), Error> {
     state::scanner_start();
@@ -484,6 +502,14 @@ pub async fn server_request(body: JkvValue) -> Result<ServerResponse, Error> {
 
 #[cfg(feature = "simulator")]
 pub async fn server_request_ex(body: JkvValue, params: ServerRequestParams) -> Result<ServerResponse, Error> {
+    let (delay_ms, failure) = state::network_sim_outcome();
+    if delay_ms > 0 {
+        crate::workq::delay(Duration::from_millis(delay_ms as u64)).await;
+    }
+    if let Some(err) = failure {
+        log::warn!("simulator: server_request failed (network sim): {}", err.message);
+        return Err(err);
+    }
     server_request_impl(params, body).await
 }
 
