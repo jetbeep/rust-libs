@@ -1069,7 +1069,7 @@ fn open_settings_modal() {
         &panel,
         inner_w,
         "Connection mode",
-        state::NetworkMode::UI_OPTIONS,
+        &state::NetworkMode::ui_options(),
         net_sim.mode.to_index(),
     );
     lv_obj_add_flag(&net_mode_row, LV_OBJ_FLAG_HIDDEN);
@@ -1088,7 +1088,7 @@ fn open_settings_modal() {
         &panel,
         inner_w,
         "Failure kind",
-        state::FailureKind::UI_OPTIONS,
+        &state::FailureKind::ui_options(),
         net_sim.failure_kind.to_index(),
     );
     lv_obj_add_flag(&net_fail_kind_row, LV_OBJ_FLAG_HIDDEN);
@@ -1474,7 +1474,12 @@ unsafe extern "C" fn stepper_fail_rate_inc_cb(_e: *mut lv_event_t) {
 unsafe extern "C" fn stepper_net_extra_dec_cb(_e: *mut lv_event_t) {
     MODAL.with(|m| {
         if let Some(modal) = m.borrow().as_ref() {
-            adjust_stepper(&modal.net_extra_ms, modal.net_extra_ms_label, -(PHYS_MS_STEP as i32));
+            adjust_stepper_clamped(
+                &modal.net_extra_ms,
+                modal.net_extra_ms_label,
+                -(PHYS_MS_STEP as i32),
+                state::NETWORK_EXTRA_LATENCY_MAX,
+            );
         }
     });
 }
@@ -1482,7 +1487,12 @@ unsafe extern "C" fn stepper_net_extra_dec_cb(_e: *mut lv_event_t) {
 unsafe extern "C" fn stepper_net_extra_inc_cb(_e: *mut lv_event_t) {
     MODAL.with(|m| {
         if let Some(modal) = m.borrow().as_ref() {
-            adjust_stepper(&modal.net_extra_ms, modal.net_extra_ms_label, PHYS_MS_STEP as i32);
+            adjust_stepper_clamped(
+                &modal.net_extra_ms,
+                modal.net_extra_ms_label,
+                PHYS_MS_STEP as i32,
+                state::NETWORK_EXTRA_LATENCY_MAX,
+            );
         }
     });
 }

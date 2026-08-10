@@ -159,6 +159,15 @@ pub enum NetworkMode {
 }
 
 impl NetworkMode {
+    /// All modes in dropdown selection-index order. Single source of truth for
+    /// the UI options and the index round-trip below.
+    pub const ALL: [NetworkMode; 4] = [
+        NetworkMode::Normal,
+        NetworkMode::Mobile,
+        NetworkMode::Slow,
+        NetworkMode::Offline,
+    ];
+
     /// Human-readable label used by the simulator UI dropdown.
     pub fn label(&self) -> &'static str {
         match self {
@@ -170,27 +179,28 @@ impl NetworkMode {
     }
 
     /// UI dropdown options, newline-separated, in selection-index order.
-    pub const UI_OPTIONS: &'static str = "Normal\nMobile\nSlow / 2G\nOffline";
+    /// Derived from [`NetworkMode::ALL`]/[`NetworkMode::label`] so the labels
+    /// stay the single source of truth.
+    pub fn ui_options() -> String {
+        Self::ALL
+            .iter()
+            .map(|m| m.label())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
-    /// Map a dropdown selection index back to a mode. Order must match
-    /// [`NetworkMode::UI_OPTIONS`].
+    /// Map a dropdown selection index back to a mode. Order matches
+    /// [`NetworkMode::ALL`]; out-of-range indices fall back to `Normal`.
     pub fn from_index(idx: u32) -> Self {
-        match idx {
-            1 => NetworkMode::Mobile,
-            2 => NetworkMode::Slow,
-            3 => NetworkMode::Offline,
-            _ => NetworkMode::Normal,
-        }
+        Self::ALL
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(NetworkMode::Normal)
     }
 
     /// Dropdown selection index for this mode.
     pub fn to_index(self) -> u32 {
-        match self {
-            NetworkMode::Normal => 0,
-            NetworkMode::Mobile => 1,
-            NetworkMode::Slow => 2,
-            NetworkMode::Offline => 3,
-        }
+        Self::ALL.iter().position(|&m| m == self).unwrap_or(0) as u32
     }
 
     /// Base delay (ms) and jitter amplitude (± ms) for this mode.
@@ -214,6 +224,14 @@ pub enum FailureKind {
 }
 
 impl FailureKind {
+    /// All kinds in dropdown selection-index order. Single source of truth for
+    /// the UI options and the index round-trip below.
+    pub const ALL: [FailureKind; 3] = [
+        FailureKind::Timeout,
+        FailureKind::ServerError,
+        FailureKind::BadRequest,
+    ];
+
     /// Human-readable label used by the simulator UI dropdown.
     pub fn label(&self) -> &'static str {
         match self {
@@ -224,25 +242,28 @@ impl FailureKind {
     }
 
     /// UI dropdown options, newline-separated, in selection-index order.
-    pub const UI_OPTIONS: &'static str = "Timeout\nServer error (5xx)\nBad request (4xx)";
+    /// Derived from [`FailureKind::ALL`]/[`FailureKind::label`] so the labels
+    /// stay the single source of truth.
+    pub fn ui_options() -> String {
+        Self::ALL
+            .iter()
+            .map(|k| k.label())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
-    /// Map a dropdown selection index back to a kind. Order must match
-    /// [`FailureKind::UI_OPTIONS`].
+    /// Map a dropdown selection index back to a kind. Order matches
+    /// [`FailureKind::ALL`]; out-of-range indices fall back to `Timeout`.
     pub fn from_index(idx: u32) -> Self {
-        match idx {
-            1 => FailureKind::ServerError,
-            2 => FailureKind::BadRequest,
-            _ => FailureKind::Timeout,
-        }
+        Self::ALL
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(FailureKind::Timeout)
     }
 
     /// Dropdown selection index for this kind.
     pub fn to_index(self) -> u32 {
-        match self {
-            FailureKind::Timeout => 0,
-            FailureKind::ServerError => 1,
-            FailureKind::BadRequest => 2,
-        }
+        Self::ALL.iter().position(|&k| k == self).unwrap_or(0) as u32
     }
 
     /// The `Error` this failure kind produces.
