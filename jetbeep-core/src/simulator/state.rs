@@ -517,7 +517,9 @@ pub fn lock_open(board_id: u32, lock_id: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Get lock statuses indexed by lock id so callers can check `statuses[lock_id]`.
+/// Get lock statuses as a zero-based, densely-packed list matching real
+/// hardware: the status for lock `n` lives at `statuses[n - 1]` (lock ids are
+/// one-based). Callers therefore index with `statuses[lock_id - 1]`.
 pub fn lock_statuses_get(board_id: u32) -> Result<Vec<LockStatus>, Error> {
     STATE.with(|s| {
         let inner = s.borrow();
@@ -531,7 +533,7 @@ pub fn lock_statuses_get(board_id: u32) -> Result<Vec<LockStatus>, Error> {
             .max()
             .unwrap_or(0);
 
-        let mut statuses = vec![LockStatus::Disabled; max_lock_id as usize + 1];
+        let mut statuses = vec![LockStatus::Disabled; max_lock_id as usize];
 
         for cell in &inner.cells {
             if cell.board_id != board_id {
@@ -544,7 +546,11 @@ pub fn lock_statuses_get(board_id: u32) -> Result<Vec<LockStatus>, Error> {
                 DoorState::Error => LockStatus::Disabled,
             };
 
-            statuses[cell.lock_id as usize] = status;
+            // Lock ids are one-based; real hardware reports them zero-based, so
+            // lock `n` maps to `statuses[n - 1]`.
+            if let Some(index) = (cell.lock_id as usize).checked_sub(1) {
+                statuses[index] = status;
+            }
         }
 
         Ok(statuses)
@@ -760,6 +766,28 @@ mod tests {
         let err = lock_open(1, 1).unwrap_err();
         // Range is valid but no such cell — falls through to the original behavior.
         assert_eq!(err.code, -2);
+    }
+
+    #[test]
+    fn lock_statuses_get_is_zero_based_like_real_hardware() {
+        // Non-contiguous lock ids (mirrors the wechip simulator config where
+        // cell "5" has lock_id 3 while cells 3/4 have lock_ids 4/5).
+        init_with(vec![cell(1, 1), cell(1, 2), cell(1, 3), cell(1, 4), cell(1, 5)]);
+
+        // Close the door on lock 3 (default is Closed; make the others Open so
+        // the assertion is meaningful).
+        for lock_id in [1, 2, 4, 5] {
+            let _ = lock_open(1, lock_id);
+        }
+        door_close(1, 3);
+
+        let statuses = lock_statuses_get(1).unwrap();
+
+        // Densely packed: length == max lock id, lock `n` at index `n - 1`.
+        assert_eq!(statuses.len(), 5);
+        assert_eq!(statuses[2], LockStatus::Closed, "lock 3 -> index 2");
+        assert_eq!(statuses[0], LockStatus::Opened, "lock 1 -> index 0");
+        assert_eq!(statuses[4], LockStatus::Opened, "lock 5 -> index 4");
     }
 
     #[test]
