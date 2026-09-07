@@ -132,6 +132,8 @@ mod ffi {
         pub fn lv_display_set_resolution(disp: *mut lv_display_t, hor_res: i32, ver_res: i32);
         pub fn lv_display_set_default(disp: *mut lv_display_t);
         pub fn lv_display_get_default() -> *mut lv_display_t;
+        pub fn lv_display_get_horizontal_resolution(disp: *const lv_display_t) -> i32;
+        pub fn lv_display_get_vertical_resolution(disp: *const lv_display_t) -> i32;
 
         // Input devices
         pub fn lv_sdl_mouse_create() -> *mut lv_indev_t;
@@ -212,6 +214,7 @@ pub const LV_STATE_DISABLED: u32 = 1 << 9;
 
 pub const LV_EVENT_CLICKED: u32 = 10; // from lv_event.h enum
 pub const LV_EVENT_VALUE_CHANGED: u32 = 35;
+pub const LV_EVENT_SIZE_CHANGED: u32 = 49; // from lv_event.h enum
 
 pub const LV_FLEX_FLOW_ROW: u32 = 0x00;
 pub const LV_FLEX_FLOW_ROW_WRAP: u32 = 0x04;
@@ -355,6 +358,14 @@ pub fn lv_display_set_default(disp: &LvDisplay) {
 
 pub fn lv_display_get_default() -> LvDisplay {
     LvDisplay { disp: unsafe { ffi::lv_display_get_default() } }
+}
+
+pub fn lv_display_get_horizontal_resolution(disp: &LvDisplay) -> i32 {
+    unsafe { ffi::lv_display_get_horizontal_resolution(disp.disp) }
+}
+
+pub fn lv_display_get_vertical_resolution(disp: &LvDisplay) -> i32 {
+    unsafe { ffi::lv_display_get_vertical_resolution(disp.disp) }
 }
 
 // ── Input devices ──

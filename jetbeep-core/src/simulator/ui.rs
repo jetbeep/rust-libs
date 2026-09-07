@@ -88,6 +88,14 @@ std::thread_local! {
 
 /// Pixel scale factor: config dimensions (cm-ish) → pixels
 const SCALE: i32 = 3;
+/// Uniform UI size multiplier for the whole simulator window. Compensates for
+/// the pixel-perfect window zoom and makes the UI larger/readable. One knob:
+/// raise/lower to scale the entire locker UI (cells, keypad, panels, modal).
+const UI_SCALE: f32 = 2.5;
+/// Scale a base pixel size by `UI_SCALE`.
+const fn px(n: i32) -> i32 {
+    (n as f32 * UI_SCALE) as i32
+}
 /// Default column-major scale used only by the catalog window-sizing math;
 /// `rebuild_lockers` recomputes a per-layout scale that fills the viewport.
 const COLUMN_SCALE: i32 = 2;
@@ -95,25 +103,46 @@ const COLUMN_SCALE: i32 = 2;
 const COLUMN_SCALE_MIN: f32 = 0.2;
 const COLUMN_SCALE_MAX: f32 = 6.0;
 /// Window padding
-const WIN_PAD: i32 = 15;
+const WIN_PAD: i32 = px(15);
 /// Gap between locker columns
-const LOCKER_GAP: i32 = 20;
+const LOCKER_GAP: i32 = px(20);
 /// Right panel width (keypad + barcode)
-const RIGHT_PANEL_W: i32 = 330;
+const RIGHT_PANEL_W: i32 = px(330);
 /// Minimum right panel height (keypad 4x4 + barcode + labels)
-const RIGHT_PANEL_MIN_H: i32 = 500;
+const RIGHT_PANEL_MIN_H: i32 = px(500);
 /// Maximum on-screen width of the lockers viewport; larger layouts scroll.
-const LOCKERS_VIEW_MAX_W: i32 = 255;
+const LOCKERS_VIEW_MAX_W: i32 = px(255);
 /// Maximum on-screen height of the lockers viewport; larger layouts scroll.
-const LOCKERS_VIEW_MAX_H: i32 = 500;
+const LOCKERS_VIEW_MAX_H: i32 = px(500);
 /// Width of the service-rack mini-locker (board 0, locks 1-3).
-const SERVICE_RACK_W: i32 = 60;
+const SERVICE_RACK_W: i32 = px(60);
 /// Per-cell height inside the service rack.
-const SERVICE_CELL_H: i32 = 45;
+const SERVICE_CELL_H: i32 = px(45);
 /// How many columns of a column-major layout we aim to show at once.
 /// Fractional — 2.5 means ~2 full columns + half of the third peeking, so
 /// users see there's more to scroll to.
 const VISIBLE_COLUMNS: f32 = 2.5;
+
+/// After a manual SDL window resize, keep `root` sized to the display so the
+/// layout occupies the new client area. Content is not rescaled — just given
+/// the new bounds, so extra space appears / scrolling range updates.
+unsafe extern "C" fn sim_resize_cb(_e: *mut lv_event_t) {
+    UI.with(|ui_cell| {
+        // `try_borrow`: rebuild_lockers holds a mutable borrow while it calls
+        // set_resolution (which fires this event synchronously). Skip then —
+        // rebuild sizes the root itself.
+        let Ok(ui_ref) = ui_cell.try_borrow() else { return };
+        if let Some(ui) = ui_ref.as_ref() {
+            let disp = LvDisplay { disp: ui.sim_disp };
+            let w = lv_display_get_horizontal_resolution(&disp);
+            let h = lv_display_get_vertical_resolution(&disp);
+            std::mem::forget(disp);
+            let root = LvObj { obj: ui.root };
+            lv_obj_set_size(&root, w, h);
+            std::mem::forget(root);
+        }
+    });
+}
 
 /// One-time setup: SDL display, input devices, right panel (keypad + barcode + layout dropdown),
 /// and the empty lockers panel. Sized to fit the largest layout in the catalog.
@@ -143,6 +172,8 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     let screen = lv_screen_active();
     lv_obj_set_style_bg_color(&screen, lv_color_hex_fn(0x2B2B3D), 0);
     lv_obj_remove_flag(&screen, LV_OBJ_FLAG_SCROLLABLE);
+    // Re-fit the root to the window whenever the user resizes the SDL window.
+    lv_obj_add_event_cb(&screen, sim_resize_cb, LV_EVENT_SIZE_CHANGED, std::ptr::null_mut());
 
     let root = lv_obj_create(&screen);
     lv_obj_set_size(&root, win_w, win_h);
@@ -154,9 +185,9 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     lv_obj_remove_flag(&root, LV_OBJ_FLAG_SCROLLABLE);
 
     // Lockers panel — empty for now; rebuild_lockers will populate it.
-    // Horizontal scrolling kept (LV_OBJ_FLAG_SCROLLABLE on by default) for
-    // wide layouts; vertical fit is enforced by column_scale_for_layout, so
-    // no vertical scrollbar should ever appear.
+    // Scrollable in both directions (drag to pan) so large layouts can be
+    // reached when they exceed the on-screen viewport. Only this panel
+    // scrolls, so clicks on the right-side controls (dropdown) are unaffected.
     let lockers_panel = lv_obj_create(&root);
     lv_obj_set_size(&lockers_panel, view_w, content_h);
     lv_obj_set_style_bg_opa(&lockers_panel, 0, 0);
@@ -164,7 +195,7 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     lv_obj_set_style_pad_all(&lockers_panel, 0, 0);
     lv_obj_set_style_pad_column(&lockers_panel, LOCKER_GAP, 0);
     lv_obj_set_flex_flow(&lockers_panel, LV_FLEX_FLOW_ROW);
-    lv_obj_set_scroll_dir(&lockers_panel, LV_DIR_HOR);
+    lv_obj_set_scroll_dir(&lockers_panel, LV_DIR_ALL);
 
     // Right side: layout dropdown (optional), keypad, barcode.
     let ctrl_panel = lv_obj_create(&root);
@@ -172,7 +203,7 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     lv_obj_set_style_bg_opa(&ctrl_panel, 0, 0);
     lv_obj_set_style_border_width(&ctrl_panel, 0, 0);
     lv_obj_set_style_pad_all(&ctrl_panel, 0, 0);
-    lv_obj_set_style_pad_row(&ctrl_panel, 15, 0);
+    lv_obj_set_style_pad_row(&ctrl_panel, px(15), 0);
     lv_obj_set_flex_flow(&ctrl_panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(&ctrl_panel, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -259,7 +290,11 @@ pub fn rebuild_lockers(layout: &super::layouts::Layout) {
         lv_obj_set_size(&root_obj, win_w, win_h);
         std::mem::forget(root_obj);
 
-        lv_obj_set_size(&panel, view_w, content_h);
+        // Size the panel to the visible area (clamped window), not the full
+        // layout, so it scrolls when the content is larger than what fits.
+        let panel_w = view_w.min(win_w - RIGHT_PANEL_W - WIN_PAD * 3).max(100);
+        let panel_h = content_h.min(win_h - WIN_PAD * 2).max(100);
+        lv_obj_set_size(&panel, panel_w, panel_h);
 
         let ctrl_obj = LvObj { obj: ui.ctrl_panel };
         lv_obj_set_size(&ctrl_obj, RIGHT_PANEL_W, content_h);
@@ -405,26 +440,26 @@ pub fn rebuild_lockers(layout: &super::layouts::Layout) {
         // dedicated service compartments and keeps them clickable in the UI
         // regardless of the active layout.
         let svc = lv_obj_create(&panel);
-        let svc_h = SERVICE_CELL_H * 3 + 2 * 2 + 25;
+        let svc_h = SERVICE_CELL_H * 3 + px(2) * 2 + px(25);
         lv_obj_set_size(&svc, SERVICE_RACK_W, svc_h);
         lv_obj_set_style_bg_opa(&svc, 0, 0);
         lv_obj_set_style_border_width(&svc, 1, 0);
         lv_obj_set_style_border_color(&svc, lv_color_hex_fn(0x555570), 0);
-        lv_obj_set_style_pad_all(&svc, 4, 0);
-        lv_obj_set_style_pad_row(&svc, 2, 0);
-        lv_obj_set_style_radius(&svc, 4, 0);
+        lv_obj_set_style_pad_all(&svc, px(4), 0);
+        lv_obj_set_style_pad_row(&svc, px(2), 0);
+        lv_obj_set_style_radius(&svc, px(4), 0);
         lv_obj_set_flex_flow(&svc, LV_FLEX_FLOW_COLUMN);
         lv_obj_remove_flag(&svc, LV_OBJ_FLAG_SCROLLABLE);
 
         let svc_title = lv_label_create(&svc);
         lv_label_set_text(&svc_title, "Service");
         lv_obj_set_style_text_color(&svc_title, lv_color_hex_fn(0xCCCCCC), 0);
-        lv_obj_set_style_text_font(&svc_title, &lv_font_montserrat_14(), 0);
+        lv_obj_set_style_text_font(&svc_title, &lv_font_montserrat_30(), 0);
 
         for lock_id in 1u32..=3 {
             let cell_obj = create_cell_widget(
                 &svc,
-                SERVICE_RACK_W - 10,
+                SERVICE_RACK_W - px(10),
                 SERVICE_CELL_H,
                 &format!("S{}", lock_id),
                 "SVC",
@@ -638,7 +673,7 @@ fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalo
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Layout");
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
-    lv_obj_set_style_text_font(&title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
     std::mem::forget(title);
 
     let options: String = catalog
@@ -649,7 +684,7 @@ fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalo
         .join("\n");
 
     let dd = lv_dropdown_create_obj(parent);
-    lv_obj_set_width(&dd, RIGHT_PANEL_W - 10);
+    lv_obj_set_width(&dd, RIGHT_PANEL_W - px(10));
     lv_dropdown_set_options_str(&dd, &options);
 
     let active = super::active_layout();
@@ -687,10 +722,10 @@ fn create_cell_widget(
 ) -> LvObj {
     let cell = lv_obj_create(parent);
     lv_obj_set_size(&cell, w, h);
-    lv_obj_set_style_radius(&cell, 4, 0);
+    lv_obj_set_style_radius(&cell, px(4), 0);
     lv_obj_set_style_border_color(&cell, lv_color_hex_fn(0x888888), 0);
     lv_obj_set_style_border_width(&cell, 1, 0);
-    lv_obj_set_style_pad_all(&cell, 5, 0);
+    lv_obj_set_style_pad_all(&cell, px(5), 0);
     lv_obj_remove_flag(&cell, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(&cell, LV_OBJ_FLAG_CLICKABLE);
 
@@ -706,13 +741,13 @@ fn create_cell_widget(
     let label = lv_label_create(&cell);
     lv_label_set_text(&label, &label_text);
     lv_obj_set_style_text_color(&label, lv_color_hex_fn(0xDDDDDD), 0);
-    lv_obj_set_style_text_font(&label, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&label, &lv_font_montserrat_30(), 0);
 
     // Pinpad indicator
     if has_pinpad {
         let icon = lv_label_create(&cell);
         lv_label_set_text(&icon, ":::");
-        lv_obj_align(&icon, LvAlign::TopRight, -5, 5);
+        lv_obj_align(&icon, LvAlign::TopRight, -px(5), px(5));
         lv_obj_set_style_text_color(&icon, lv_color_hex_fn(0x888888), 0);
     }
 
@@ -752,7 +787,7 @@ fn create_keypad(parent: &LvObj) {
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Keypad");
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
-    lv_obj_set_style_text_font(&title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
 
     // 4x4 grid
     let keys: [[&str; 4]; 4] = [
@@ -763,15 +798,15 @@ fn create_keypad(parent: &LvObj) {
     ];
 
     let grid = lv_obj_create(parent);
-    let btn_size = 40;
-    let gap = 4;
-    let pad = 5;
+    let btn_size = px(40);
+    let gap = px(4);
+    let pad = px(5);
     let grid_w = btn_size * 4 + gap * 3 + pad * 2;
     let grid_h = btn_size * 4 + gap * 3 + pad * 2;
     lv_obj_set_size(&grid, grid_w, grid_h);
     lv_obj_set_style_bg_opa(&grid, 0, 0);
     lv_obj_set_style_border_width(&grid, 0, 0);
-    lv_obj_set_style_pad_all(&grid, 5, 0);
+    lv_obj_set_style_pad_all(&grid, px(5), 0);
     lv_obj_set_style_pad_row(&grid, gap, 0);
     lv_obj_set_style_pad_column(&grid, gap, 0);
     lv_obj_set_flex_flow(&grid, LV_FLEX_FLOW_ROW_WRAP);
@@ -782,7 +817,7 @@ fn create_keypad(parent: &LvObj) {
             let btn = lv_button_create(&grid);
             lv_obj_set_size(&btn, btn_size, btn_size);
             lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x4A4A5E), 0);
-            lv_obj_set_style_radius(&btn, 6, 0);
+            lv_obj_set_style_radius(&btn, px(6), 0);
 
             let label = lv_label_create(&btn);
             lv_label_set_text(&label, key_label);
@@ -812,23 +847,23 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Barcode Scanner");
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
-    lv_obj_set_style_text_font(&title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
 
     // Container
     let cont = lv_obj_create(parent);
     lv_obj_set_width(&cont, RIGHT_PANEL_W);
-    lv_obj_set_height(&cont, 90);
+    lv_obj_set_height(&cont, px(90));
     lv_obj_set_style_bg_opa(&cont, 0, 0);
     lv_obj_set_style_border_width(&cont, 0, 0);
     lv_obj_set_style_pad_all(&cont, 0, 0);
-    lv_obj_set_style_pad_row(&cont, 8, 0);
+    lv_obj_set_style_pad_row(&cont, px(8), 0);
     lv_obj_set_flex_flow(&cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(&cont, LV_OBJ_FLAG_SCROLLABLE);
 
     // Text input
     let input = lv_textarea_create(&cont);
-    lv_obj_set_width(&input, RIGHT_PANEL_W - 10);
-    lv_obj_set_height(&input, 36);
+    lv_obj_set_width(&input, RIGHT_PANEL_W - px(10));
+    lv_obj_set_height(&input, px(36));
     lv_textarea_set_placeholder_text(&input, "Enter barcode...");
     lv_textarea_set_one_line(&input, true);
     lv_obj_add_flag(&input, LV_OBJ_FLAG_CLICK_FOCUSABLE);
@@ -838,10 +873,10 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
 
     // Scan button
     let btn = lv_button_create(&cont);
-    lv_obj_set_width(&btn, RIGHT_PANEL_W - 10);
-    lv_obj_set_height(&btn, 36);
+    lv_obj_set_width(&btn, RIGHT_PANEL_W - px(10));
+    lv_obj_set_height(&btn, px(36));
     lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x1565C0), 0);
-    lv_obj_set_style_radius(&btn, 6, 0);
+    lv_obj_set_style_radius(&btn, px(6), 0);
 
     let btn_label = lv_label_create(&btn);
     lv_label_set_text(&btn_label, "Scan");
@@ -889,10 +924,10 @@ const SYMBOL_SETTINGS: &str = "\u{F013}";
 /// pinned to the corner even when the window is resized on layout switches.
 fn create_settings_button(screen: &LvObj) {
     let btn = lv_button_create(screen);
-    lv_obj_set_size(&btn, 30, 30);
-    lv_obj_align(&btn, LvAlign::TopRight, -6, 6);
+    lv_obj_set_size(&btn, px(30), px(30));
+    lv_obj_align(&btn, LvAlign::TopRight, -px(6), px(6));
     lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x455A64), 0);
-    lv_obj_set_style_radius(&btn, 15, 0);
+    lv_obj_set_style_radius(&btn, px(15), 0);
     lv_obj_set_style_pad_all(&btn, 0, 0);
 
     let label = lv_label_create(&btn);
@@ -941,40 +976,43 @@ fn open_settings_modal() {
 
     // Centered editor panel, clamped to fit smaller windows. `TAB_BAR_H`
     // reserves space for the "Config" / "Timing" tab bar at the top.
-    const TAB_BAR_H: i32 = 40;
-    let panel_w = 520.min(win_w - 20);
-    let panel_h = (470 + TAB_BAR_H).min(win_h - 20);
-    let inner_w = panel_w - 30;
-    let ta_h = panel_h - 205 - TAB_BAR_H;
+    const TAB_BAR_H: i32 = px(40);
+    let panel_w = px(520).min(win_w - px(20));
+    let panel_h = (px(470) + TAB_BAR_H).min(win_h - px(20));
+    let inner_w = panel_w - px(30);
+    let ta_h = panel_h - px(205) - TAB_BAR_H;
     let panel = lv_obj_create(&backdrop);
     lv_obj_set_size(&panel, panel_w, panel_h);
     lv_obj_align(&panel, LvAlign::Center, 0, 0);
     lv_obj_remove_flag(&panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(&panel, lv_color_hex_fn(0x2B2B3D), 0);
     lv_obj_set_style_bg_opa(&panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(&panel, 8, 0);
+    lv_obj_set_style_radius(&panel, px(8), 0);
     lv_obj_set_style_border_color(&panel, lv_color_hex_fn(0x555566), 0);
     lv_obj_set_style_border_width(&panel, 1, 0);
-    lv_obj_set_style_pad_all(&panel, 15, 0);
-    lv_obj_set_style_pad_row(&panel, 10, 0);
+    lv_obj_set_style_pad_all(&panel, px(15), 0);
+    lv_obj_set_style_pad_row(&panel, px(10), 0);
     lv_obj_set_flex_flow(&panel, LV_FLEX_FLOW_COLUMN);
+    // Inherited by all modal children (textarea, buttons, steppers, dropdowns)
+    // unless they set their own font, so the whole modal text scales up.
+    lv_obj_set_style_text_font(&panel, &lv_font_montserrat_30(), 0);
 
     // Tab bar: "Config" (user_params JSON) / "Timing" (physical world
     // simulation), so hardware-latency settings are visually separated from
     // the raw locker JSON config.
     let tab_row = lv_obj_create(&panel);
     lv_obj_set_width(&tab_row, inner_w);
-    lv_obj_set_height(&tab_row, TAB_BAR_H - 6);
+    lv_obj_set_height(&tab_row, TAB_BAR_H - px(6));
     lv_obj_set_style_bg_opa(&tab_row, 0, 0);
     lv_obj_set_style_border_width(&tab_row, 0, 0);
     lv_obj_set_style_pad_all(&tab_row, 0, 0);
-    lv_obj_set_style_pad_column(&tab_row, 8, 0);
+    lv_obj_set_style_pad_column(&tab_row, px(8), 0);
     lv_obj_set_flex_flow(&tab_row, LV_FLEX_FLOW_ROW);
     lv_obj_remove_flag(&tab_row, LV_OBJ_FLAG_SCROLLABLE);
 
     let tab_config_btn = lv_button_create(&tab_row);
-    lv_obj_set_size(&tab_config_btn, 140, TAB_BAR_H - 6);
-    lv_obj_set_style_radius(&tab_config_btn, 6, 0);
+    lv_obj_set_size(&tab_config_btn, px(140), TAB_BAR_H - px(6));
+    lv_obj_set_style_radius(&tab_config_btn, px(6), 0);
     let tab_config_lbl = lv_label_create(&tab_config_btn);
     lv_label_set_text(&tab_config_lbl, "Config");
     lv_obj_align(&tab_config_lbl, LvAlign::Center, 0, 0);
@@ -983,8 +1021,8 @@ fn open_settings_modal() {
     std::mem::forget(tab_config_lbl);
 
     let tab_timing_btn = lv_button_create(&tab_row);
-    lv_obj_set_size(&tab_timing_btn, 140, TAB_BAR_H - 6);
-    lv_obj_set_style_radius(&tab_timing_btn, 6, 0);
+    lv_obj_set_size(&tab_timing_btn, px(140), TAB_BAR_H - px(6));
+    lv_obj_set_style_radius(&tab_timing_btn, px(6), 0);
     let tab_timing_lbl = lv_label_create(&tab_timing_btn);
     lv_label_set_text(&tab_timing_lbl, "Timing");
     lv_obj_align(&tab_timing_lbl, LvAlign::Center, 0, 0);
@@ -997,7 +1035,7 @@ fn open_settings_modal() {
     let config_title = lv_label_create(&panel);
     lv_label_set_text(&config_title, "Edit user_params (JSON)");
     lv_obj_set_style_text_color(&config_title, lv_color_hex_fn(0xEEEEEE), 0);
-    lv_obj_set_style_text_font(&config_title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&config_title, &lv_font_montserrat_30(), 0);
 
     let ta = lv_textarea_create(&panel);
     lv_obj_set_size(&ta, inner_w, ta_h);
@@ -1017,16 +1055,16 @@ fn open_settings_modal() {
     // Utility row: Paste / Copy / Clear.
     let util_row = lv_obj_create(&panel);
     lv_obj_set_width(&util_row, inner_w);
-    lv_obj_set_height(&util_row, 40);
+    lv_obj_set_height(&util_row, px(40));
     lv_obj_set_style_bg_opa(&util_row, 0, 0);
     lv_obj_set_style_border_width(&util_row, 0, 0);
     lv_obj_set_style_pad_all(&util_row, 0, 0);
-    lv_obj_set_style_pad_column(&util_row, 8, 0);
+    lv_obj_set_style_pad_column(&util_row, px(8), 0);
     lv_obj_set_flex_flow(&util_row, LV_FLEX_FLOW_ROW);
     lv_obj_remove_flag(&util_row, LV_OBJ_FLAG_SCROLLABLE);
-    make_modal_button(&util_row, 100, 0x37474F, "Paste", modal_paste_cb);
-    make_modal_button(&util_row, 100, 0x37474F, "Copy", modal_copy_cb);
-    make_modal_button(&util_row, 100, 0x6D4C41, "Clear", modal_clear_cb);
+    make_modal_button(&util_row, px(100), 0x37474F, "Paste", modal_paste_cb);
+    make_modal_button(&util_row, px(100), 0x37474F, "Copy", modal_copy_cb);
+    make_modal_button(&util_row, px(100), 0x6D4C41, "Clear", modal_clear_cb);
 
     // ── "Timing" tab: physical world simulation (door-open / cell-status
     // hardware latency), hidden until the user switches tabs ─────────────
@@ -1034,7 +1072,7 @@ fn open_settings_modal() {
     let phys_title = lv_label_create(&panel);
     lv_label_set_text(&phys_title, "Physical world simulation");
     lv_obj_set_style_text_color(&phys_title, lv_color_hex_fn(0xEEEEEE), 0);
-    lv_obj_set_style_text_font(&phys_title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&phys_title, &lv_font_montserrat_30(), 0);
     lv_obj_add_flag(&phys_title, LV_OBJ_FLAG_HIDDEN);
 
     let (door_open_row, door_open_label) = make_stepper_row(
@@ -1062,7 +1100,7 @@ fn open_settings_modal() {
     let net_title = lv_label_create(&panel);
     lv_label_set_text(&net_title, "Network simulation");
     lv_obj_set_style_text_color(&net_title, lv_color_hex_fn(0xEEEEEE), 0);
-    lv_obj_set_style_text_font(&net_title, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&net_title, &lv_font_montserrat_30(), 0);
     lv_obj_add_flag(&net_title, LV_OBJ_FLAG_HIDDEN);
 
     let (net_mode_row, net_mode_dropdown) = make_dropdown_row(
@@ -1106,22 +1144,22 @@ fn open_settings_modal() {
     let err = lv_label_create(&panel);
     lv_label_set_text(&err, "");
     lv_obj_set_style_text_color(&err, lv_color_hex_fn(0xE57373), 0);
-    lv_obj_set_style_text_font(&err, &lv_font_montserrat_14(), 0);
+    lv_obj_set_style_text_font(&err, &lv_font_montserrat_30(), 0);
 
     let row = lv_obj_create(&panel);
     lv_obj_set_width(&row, inner_w);
-    lv_obj_set_height(&row, 44);
+    lv_obj_set_height(&row, px(44));
     lv_obj_set_style_bg_opa(&row, 0, 0);
     lv_obj_set_style_border_width(&row, 0, 0);
     lv_obj_set_style_pad_all(&row, 0, 0);
-    lv_obj_set_style_pad_column(&row, 10, 0);
+    lv_obj_set_style_pad_column(&row, px(10), 0);
     lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
     lv_obj_remove_flag(&row, LV_OBJ_FLAG_SCROLLABLE);
 
     let save_btn = lv_button_create(&row);
-    lv_obj_set_size(&save_btn, 110, 40);
+    lv_obj_set_size(&save_btn, px(110), px(40));
     lv_obj_set_style_bg_color(&save_btn, lv_color_hex_fn(0x2E7D32), 0);
-    lv_obj_set_style_radius(&save_btn, 6, 0);
+    lv_obj_set_style_radius(&save_btn, px(6), 0);
     let save_lbl = lv_label_create(&save_btn);
     lv_label_set_text(&save_lbl, "Save & apply");
     lv_obj_align(&save_lbl, LvAlign::Center, 0, 0);
@@ -1129,9 +1167,9 @@ fn open_settings_modal() {
     lv_obj_add_event_cb(&save_btn, modal_save_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
 
     let cancel_btn = lv_button_create(&row);
-    lv_obj_set_size(&cancel_btn, 100, 40);
+    lv_obj_set_size(&cancel_btn, px(100), px(40));
     lv_obj_set_style_bg_color(&cancel_btn, lv_color_hex_fn(0x555566), 0);
-    lv_obj_set_style_radius(&cancel_btn, 6, 0);
+    lv_obj_set_style_radius(&cancel_btn, px(6), 0);
     let cancel_lbl = lv_label_create(&cancel_btn);
     lv_label_set_text(&cancel_lbl, "Cancel");
     lv_obj_align(&cancel_lbl, LvAlign::Center, 0, 0);
@@ -1262,11 +1300,11 @@ fn make_stepper_row(
 ) -> (LvObj, LvObj) {
     let row = lv_obj_create(panel);
     lv_obj_set_width(&row, inner_w);
-    lv_obj_set_height(&row, 34);
+    lv_obj_set_height(&row, px(34));
     lv_obj_set_style_bg_opa(&row, 0, 0);
     lv_obj_set_style_border_width(&row, 0, 0);
     lv_obj_set_style_pad_all(&row, 0, 0);
-    lv_obj_set_style_pad_column(&row, 8, 0);
+    lv_obj_set_style_pad_column(&row, px(8), 0);
     lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(
         &row,
@@ -1284,12 +1322,12 @@ fn make_stepper_row(
     std::mem::forget(title);
 
     let stepper = lv_obj_create(&row);
-    lv_obj_set_height(&stepper, 34);
-    lv_obj_set_width(&stepper, 150);
+    lv_obj_set_height(&stepper, px(34));
+    lv_obj_set_width(&stepper, px(150));
     lv_obj_set_style_bg_opa(&stepper, 0, 0);
     lv_obj_set_style_border_width(&stepper, 0, 0);
     lv_obj_set_style_pad_all(&stepper, 0, 0);
-    lv_obj_set_style_pad_column(&stepper, 8, 0);
+    lv_obj_set_style_pad_column(&stepper, px(8), 0);
     lv_obj_set_flex_flow(&stepper, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(
         &stepper,
@@ -1299,14 +1337,14 @@ fn make_stepper_row(
     );
     lv_obj_remove_flag(&stepper, LV_OBJ_FLAG_SCROLLABLE);
 
-    make_modal_button(&stepper, 34, 0x37474F, "-", dec_cb);
+    make_modal_button(&stepper, px(34), 0x37474F, "-", dec_cb);
 
     let value_label = lv_label_create(&stepper);
     lv_label_set_text(&value_label, &initial_ms.to_string());
     lv_obj_set_style_text_color(&value_label, lv_color_hex_fn(0xEEEEEE), 0);
-    lv_obj_set_width(&value_label, 50);
+    lv_obj_set_width(&value_label, px(50));
 
-    make_modal_button(&stepper, 34, 0x37474F, "+", inc_cb);
+    make_modal_button(&stepper, px(34), 0x37474F, "+", inc_cb);
 
     std::mem::forget(stepper);
     (row, value_label)
@@ -1323,11 +1361,11 @@ fn make_dropdown_row(
 ) -> (LvObj, LvObj) {
     let row = lv_obj_create(panel);
     lv_obj_set_width(&row, inner_w);
-    lv_obj_set_height(&row, 40);
+    lv_obj_set_height(&row, px(40));
     lv_obj_set_style_bg_opa(&row, 0, 0);
     lv_obj_set_style_border_width(&row, 0, 0);
     lv_obj_set_style_pad_all(&row, 0, 0);
-    lv_obj_set_style_pad_column(&row, 8, 0);
+    lv_obj_set_style_pad_column(&row, px(8), 0);
     lv_obj_set_flex_flow(&row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(
         &row,
@@ -1344,7 +1382,7 @@ fn make_dropdown_row(
     std::mem::forget(title);
 
     let dd = lv_dropdown_create_obj(&row);
-    lv_obj_set_width(&dd, 190);
+    lv_obj_set_width(&dd, px(190));
     lv_dropdown_set_options_str(&dd, options);
     lv_dropdown_set_selected_idx(&dd, selected_idx);
 
@@ -1532,9 +1570,9 @@ unsafe extern "C" fn stepper_cell_inc_cb(_e: *mut lv_event_t) {
 /// Create a labeled button inside a modal row and wire its click callback.
 fn make_modal_button(row: &LvObj, w: i32, bg: u32, text: &str, cb: lv_event_cb_t) {
     let btn = lv_button_create(row);
-    lv_obj_set_size(&btn, w, 40);
+    lv_obj_set_size(&btn, w, px(40));
     lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(bg), 0);
-    lv_obj_set_style_radius(&btn, 6, 0);
+    lv_obj_set_style_radius(&btn, px(6), 0);
     let lbl = lv_label_create(&btn);
     lv_label_set_text(&lbl, text);
     lv_obj_align(&lbl, LvAlign::Center, 0, 0);
