@@ -160,6 +160,7 @@ mod ffi {
         pub fn lv_dropdown_set_selected(obj: *mut lv_obj_t, sel_opt: u32);
         pub fn lv_dropdown_get_selected(obj: *const lv_obj_t) -> u32;
         pub fn lv_dropdown_get_selected_str(obj: *const lv_obj_t, buf: *mut c_char, buf_size: u32);
+        pub fn lv_dropdown_get_list(obj: *mut lv_obj_t) -> *mut lv_obj_t;
 
         // Msgbox (LVGL v9 API)
         pub fn lv_msgbox_create(parent: *mut lv_obj_t) -> *mut lv_obj_t;
@@ -684,6 +685,16 @@ pub fn lv_dropdown_set_selected_idx(dd: &LvObj, idx: u32) {
 
 pub fn lv_dropdown_get_selected_idx(dd: &LvObj) -> u32 {
     unsafe { ffi::lv_dropdown_get_selected(dd.obj) }
+}
+
+/// The option list object. It is reparented to the screen when opened, so it
+/// does not inherit styles from the dropdown and must be styled directly.
+pub fn lv_dropdown_get_list_obj(dd: &LvObj) -> LvObj {
+    let obj = unsafe { ffi::lv_dropdown_get_list(dd.obj) };
+    if obj.is_null() {
+        panic!("Dropdown has no list");
+    }
+    LvObj { obj }
 }
 
 pub fn lv_dropdown_get_selected_text(dd: &LvObj) -> String {

@@ -685,7 +685,14 @@ fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalo
 
     let dd = lv_dropdown_create_obj(parent);
     lv_obj_set_width(&dd, RIGHT_PANEL_W - px(10));
+    lv_obj_set_style_text_font(&dd, &lv_font_montserrat_30(), 0);
     lv_dropdown_set_options_str(&dd, &options);
+
+    // The open list is reparented to the screen, so it inherits nothing from
+    // the dropdown and needs the font set on it directly.
+    let list = lv_dropdown_get_list_obj(&dd);
+    lv_obj_set_style_text_font(&list, &lv_font_montserrat_30(), 0);
+    std::mem::forget(list);
 
     let active = super::active_layout();
     if let Some(active_name) = active {
@@ -823,6 +830,7 @@ fn create_keypad(parent: &LvObj) {
             lv_label_set_text(&label, key_label);
             lv_obj_align(&label, LvAlign::Center, 0, 0);
             lv_obj_set_style_text_color(&label, lv_color_hex_fn(0xEEEEEE), 0);
+            lv_obj_set_style_text_font(&label, &lv_font_montserrat_30(), 0);
 
             // Store key char in user_data (fits in a pointer)
             let key_char = key_label.chars().next().unwrap();
@@ -869,6 +877,7 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
     lv_obj_add_flag(&input, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_set_style_bg_color(&input, lv_color_hex_fn(0x3A3A4E), 0);
     lv_obj_set_style_text_color(&input, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&input, &lv_font_montserrat_30(), 0);
     lv_obj_set_style_border_color(&input, lv_color_hex_fn(0x666666), 0);
 
     // Scan button
@@ -882,6 +891,7 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
     lv_label_set_text(&btn_label, "Scan");
     lv_obj_align(&btn_label, LvAlign::Center, 0, 0);
     lv_obj_set_style_text_color(&btn_label, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(&btn_label, &lv_font_montserrat_30(), 0);
 
     // Store textarea pointer as user_data for the button callback
     lv_obj_add_event_cb(&btn, scan_click_cb, LV_EVENT_CLICKED, input.obj as *mut c_void);
