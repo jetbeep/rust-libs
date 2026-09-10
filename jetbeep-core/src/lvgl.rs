@@ -69,6 +69,9 @@ mod ffi {
         pub fn lv_obj_set_width(obj: *mut lv_obj_t, w: i32);
         pub fn lv_obj_set_height(obj: *mut lv_obj_t, h: i32);
         pub fn lv_obj_set_pos(obj: *mut lv_obj_t, x: i32, y: i32);
+        pub fn lv_obj_set_x(obj: *mut lv_obj_t, x: i32);
+        pub fn lv_obj_get_x(obj: *const lv_obj_t) -> i32;
+        pub fn lv_obj_get_width(obj: *const lv_obj_t) -> i32;
 
         // Flex layout
         pub fn lv_obj_set_flex_flow(obj: *mut lv_obj_t, flow: u32);
@@ -161,6 +164,7 @@ mod ffi {
         pub fn lv_dropdown_get_selected(obj: *const lv_obj_t) -> u32;
         pub fn lv_dropdown_get_selected_str(obj: *const lv_obj_t, buf: *mut c_char, buf_size: u32);
         pub fn lv_dropdown_get_list(obj: *mut lv_obj_t) -> *mut lv_obj_t;
+        pub fn lv_dropdown_set_text(obj: *mut lv_obj_t, txt: *const c_char);
 
         // Msgbox (LVGL v9 API)
         pub fn lv_msgbox_create(parent: *mut lv_obj_t) -> *mut lv_obj_t;
@@ -212,6 +216,8 @@ pub const LV_OBJ_FLAG_CLICKABLE: u32 = 1 << 1;
 pub const LV_OBJ_FLAG_CLICK_FOCUSABLE: u32 = 1 << 2;
 
 pub const LV_STATE_DISABLED: u32 = 1 << 9;
+pub const LV_STATE_FOCUSED: u32 = 0x0002;
+pub const LV_PART_CURSOR: u32 = 0x060000;
 
 pub const LV_EVENT_CLICKED: u32 = 10; // from lv_event.h enum
 pub const LV_EVENT_VALUE_CHANGED: u32 = 35;
@@ -484,6 +490,18 @@ pub fn lv_obj_set_pos(obj: &LvObj, x: i32, y: i32) {
     unsafe { ffi::lv_obj_set_pos(obj.obj, x, y) }
 }
 
+pub fn lv_obj_set_x(obj: &LvObj, x: i32) {
+    unsafe { ffi::lv_obj_set_x(obj.obj, x) }
+}
+
+pub fn lv_obj_get_x(obj: &LvObj) -> i32 {
+    unsafe { ffi::lv_obj_get_x(obj.obj) }
+}
+
+pub fn lv_obj_get_width(obj: &LvObj) -> i32 {
+    unsafe { ffi::lv_obj_get_width(obj.obj) }
+}
+
 // ── Flex layout ──
 
 pub fn lv_obj_set_flex_flow(obj: &LvObj, flow: u32) {
@@ -551,8 +569,11 @@ pub fn lv_obj_set_style_pad_all(obj: &LvObj, value: i32, selector: u32) {
     }
 }
 
-pub fn lv_obj_set_style_pad_row(obj: &LvObj, value: i32, selector: u32) {
-    unsafe { ffi::lv_obj_set_style_pad_row(obj.obj, value, selector) }
+pub fn lv_obj_set_style_pad_top(obj: &LvObj, value: i32, selector: u32) {
+    unsafe { ffi::lv_obj_set_style_pad_top(obj.obj, value, selector) }
+}
+
+pub fn lv_obj_set_style_pad_row(obj: &LvObj, value: i32, selector: u32) {    unsafe { ffi::lv_obj_set_style_pad_row(obj.obj, value, selector) }
 }
 
 pub fn lv_obj_set_style_pad_column(obj: &LvObj, value: i32, selector: u32) {
@@ -663,7 +684,6 @@ pub fn lv_font_montserrat_30() -> LvFont {
         font: unsafe { &ffi::lv_font_montserrat_30 as *const lv_font_t },
     }
 }
-
 // ── Dropdown ──
 
 pub fn lv_dropdown_create_obj(parent: &LvObj) -> LvObj {
@@ -685,6 +705,15 @@ pub fn lv_dropdown_set_selected_idx(dd: &LvObj, idx: u32) {
 
 pub fn lv_dropdown_get_selected_idx(dd: &LvObj) -> u32 {
     unsafe { ffi::lv_dropdown_get_selected(dd.obj) }
+}
+
+/// Show `txt` instead of the selected option in the collapsed dropdown.
+///
+/// # Safety
+/// LVGL stores the pointer without copying, so `txt` must stay alive and
+/// unchanged for as long as the dropdown uses it.
+pub unsafe fn lv_dropdown_set_text_static(dd: &LvObj, txt: *const c_char) {
+    unsafe { ffi::lv_dropdown_set_text(dd.obj, txt) }
 }
 
 /// The option list object. It is reparented to the screen when opened, so it
