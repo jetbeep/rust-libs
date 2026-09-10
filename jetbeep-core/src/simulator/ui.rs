@@ -36,6 +36,9 @@ struct SimulatorUi {
     win_h: i32,
     #[allow(dead_code)]
     layout_dropdown: Option<*mut lv_obj_t>,
+    /// Active layout, kept so the lockers can be re-rendered at a new scale
+    /// when the window is resized.
+    layout: Option<super::layouts::Layout>,
 }
 
 /// UI object references for the live `user_params` editor modal, present only
@@ -81,9 +84,12 @@ const FAIL_PCT_STEP: u32 = 10;
 const FAIL_PCT_MAX: u32 = 100;
 
 // Store UI refs in thread-local for refresh callbacks
-std::thread_local! {
-    static UI: std::cell::RefCell<Option<SimulatorUi>> = const { std::cell::RefCell::new(None) };
+std::thread_local! {    static UI: std::cell::RefCell<Option<SimulatorUi>> = const { std::cell::RefCell::new(None) };
     static MODAL: std::cell::RefCell<Option<ModalUi>> = const { std::cell::RefCell::new(None) };
+    /// Backing storage for the collapsed dropdown label: LVGL keeps the pointer
+    /// passed to `lv_dropdown_set_text` instead of copying the string.
+    static DROPDOWN_LABEL: std::cell::RefCell<Option<std::ffi::CString>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Pixel scale factor: config dimensions (cm-ish) → pixels
@@ -106,14 +112,33 @@ const COLUMN_SCALE_MAX: f32 = 6.0;
 const WIN_PAD: i32 = px(15);
 /// Gap between locker columns
 const LOCKER_GAP: i32 = px(20);
-/// Right panel width (keypad + barcode)
-const RIGHT_PANEL_W: i32 = px(330);
+/// Keypad button metrics. They also define the width of the whole right-hand
+/// control column, so the dropdown, barcode input and Scan button line up
+/// with the keypad instead of being much wider.
+const KEY_BTN_SIZE: i32 = px(40);
+const KEY_GAP: i32 = px(4);
+const KEYPAD_PAD: i32 = px(5);
+/// Width of the keypad's four button columns — the control column content width.
+const CTRL_ITEM_W: i32 = KEY_BTN_SIZE * 4 + KEY_GAP * 3;
+/// Right panel width: content plus the keypad grid's own padding, which gives
+/// the buttons room to grow on press without being clipped.
+const RIGHT_PANEL_W: i32 = CTRL_ITEM_W + KEYPAD_PAD * 2;
+/// Floating settings button, pinned to the top-right corner of the screen.
+const SETTINGS_BTN_SIZE: i32 = px(30);
+const SETTINGS_BTN_MARGIN: i32 = px(6);
+/// Keeps the control column clear of the floating settings button.
+const CTRL_PANEL_TOP_PAD: i32 =
+    SETTINGS_BTN_MARGIN * 2 + SETTINGS_BTN_SIZE - WIN_PAD;
 /// Minimum right panel height (keypad 4x4 + barcode + labels)
 const RIGHT_PANEL_MIN_H: i32 = px(500);
-/// Maximum on-screen width of the lockers viewport; larger layouts scroll.
-const LOCKERS_VIEW_MAX_W: i32 = px(255);
-/// Maximum on-screen height of the lockers viewport; larger layouts scroll.
+/// Default viewport width budget used to pick the initial window size;
+/// after that the real window size drives the scale.
+const LOCKERS_VIEW_MAX_W: i32 = px(360);
+/// Default viewport height budget used to pick the initial window size.
 const LOCKERS_VIEW_MAX_H: i32 = px(500);
+/// Cells may be scaled at most this much more along one axis than the other,
+/// so a very wide or very tall window does not flatten them into bars.
+const MAX_AXIS_STRETCH: f32 = 1.5;
 /// Width of the service-rack mini-locker (board 0, locks 1-3).
 const SERVICE_RACK_W: i32 = px(60);
 /// Per-cell height inside the service rack.
@@ -123,25 +148,28 @@ const SERVICE_CELL_H: i32 = px(45);
 /// users see there's more to scroll to.
 const VISIBLE_COLUMNS: f32 = 2.5;
 
-/// After a manual SDL window resize, keep `root` sized to the display so the
-/// layout occupies the new client area. Content is not rescaled — just given
-/// the new bounds, so extra space appears / scrolling range updates.
+/// After a manual SDL window resize, re-render the lockers so they fill the
+/// new client area instead of leaving the extra space empty.
 unsafe extern "C" fn sim_resize_cb(_e: *mut lv_event_t) {
-    UI.with(|ui_cell| {
-        // `try_borrow`: rebuild_lockers holds a mutable borrow while it calls
-        // set_resolution (which fires this event synchronously). Skip then —
-        // rebuild sizes the root itself.
-        let Ok(ui_ref) = ui_cell.try_borrow() else { return };
-        if let Some(ui) = ui_ref.as_ref() {
-            let disp = LvDisplay { disp: ui.sim_disp };
-            let w = lv_display_get_horizontal_resolution(&disp);
-            let h = lv_display_get_vertical_resolution(&disp);
-            std::mem::forget(disp);
-            let root = LvObj { obj: ui.root };
-            lv_obj_set_size(&root, w, h);
-            std::mem::forget(root);
+    // `try_borrow`: rebuild_lockers holds a mutable borrow while it calls
+    // set_resolution (which fires this event synchronously). Skip then —
+    // the rebuild sizes everything itself.
+    let layout = UI.with(|ui_cell| {
+        let Ok(ui_ref) = ui_cell.try_borrow() else { return None };
+        let ui = ui_ref.as_ref()?;
+        let disp = LvDisplay { disp: ui.sim_disp };
+        let w = lv_display_get_horizontal_resolution(&disp);
+        let h = lv_display_get_vertical_resolution(&disp);
+        std::mem::forget(disp);
+        if w == ui.win_w && h == ui.win_h {
+            return None;
         }
+        ui.layout.clone()
     });
+
+    if let Some(layout) = layout {
+        rebuild_lockers_impl(&layout, false);
+    }
 }
 
 /// One-time setup: SDL display, input devices, right panel (keypad + barcode + layout dropdown),
@@ -203,8 +231,17 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
     lv_obj_set_style_bg_opa(&ctrl_panel, 0, 0);
     lv_obj_set_style_border_width(&ctrl_panel, 0, 0);
     lv_obj_set_style_pad_all(&ctrl_panel, 0, 0);
+    lv_obj_set_style_pad_top(&ctrl_panel, CTRL_PANEL_TOP_PAD, 0);
     lv_obj_set_style_pad_row(&ctrl_panel, px(15), 0);
     lv_obj_set_flex_flow(&ctrl_panel, LV_FLEX_FLOW_COLUMN);
+    // Centered horizontally so the narrower items line up with the keypad,
+    // whose grid is `KEYPAD_PAD` wider on each side.
+    lv_obj_set_flex_align(
+        &ctrl_panel,
+        LV_FLEX_ALIGN_START,
+        LV_FLEX_ALIGN_CENTER,
+        LV_FLEX_ALIGN_START,
+    );
     lv_obj_remove_flag(&ctrl_panel, LV_OBJ_FLAG_SCROLLABLE);
 
     let layout_dropdown = if catalog.layouts.len() > 1 {
@@ -234,6 +271,7 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
             win_w,
             win_h,
             layout_dropdown,
+            layout: None,
         });
     });
     std::mem::forget(barcode_input);
@@ -253,6 +291,22 @@ pub fn create_window(catalog: &super::layouts::LayoutCatalog) {
 
 /// Tear down the lockers panel's children and rebuild for the given layout.
 pub fn rebuild_lockers(layout: &super::layouts::Layout) {
+    rebuild_lockers_impl(layout, true);
+}
+
+/// Space left for the lockers once the fixed right-hand control panel and the
+/// window padding are taken out.
+fn viewport_for_window(win_w: i32, win_h: i32) -> (i32, i32) {
+    let w = (win_w - RIGHT_PANEL_W - WIN_PAD * 3).max(100);
+    let h = (win_h - WIN_PAD * 2).max(100);
+    (w, h)
+}
+
+/// Render `layout` into the lockers panel, scaled to the space the window
+/// actually offers. With `resize_window` the window is first autosized to the
+/// layout's natural size; without it the current window size is kept (manual
+/// resize path).
+fn rebuild_lockers_impl(layout: &super::layouts::Layout, resize_window: bool) {
     UI.with(|ui_cell| {
         let mut ui_borrow = ui_cell.borrow_mut();
         let ui = match ui_borrow.as_mut() {
@@ -263,41 +317,49 @@ pub fn rebuild_lockers(layout: &super::layouts::Layout) {
         let panel = LvObj { obj: ui.lockers_panel };
         lv_obj_clean(&panel);
 
-        // Autosize the SDL window + containers so the entire layout is
-        // visible without horizontal scrolling. Sizes are derived from the
-        // same scale factors used to render the cells below.
-        let (view_w, view_h) = layout_view_dims(layout);
-        let content_h = view_h + 40;
-        let mut win_w = view_w + RIGHT_PANEL_W + WIN_PAD * 3;
-        let mut win_h = content_h + WIN_PAD * 2;
-
-        // Cap window at 80% of the monitor so it always fits on-screen.
-        // Inner panels keep their natural size so the lockers panel scrolls
-        // when clamping kicks in.
-        if let Some((mon_w, mon_h)) = sdl_monitor_size() {
-            let max_w = (mon_w as f32 * 0.8).round() as i32;
-            let max_h = (mon_h as f32 * 0.8).round() as i32;
-            if win_w > max_w { win_w = max_w; }
-            if win_h > max_h { win_h = max_h; }
-        }
-
         let sim_disp = LvDisplay { disp: ui.sim_disp };
-        lv_sdl_window_set_resolution(&sim_disp, win_w, win_h);
+        let (win_w, win_h) = if resize_window {
+            // Autosize the SDL window so the entire layout is visible without
+            // horizontal scrolling, using the default viewport budget.
+            let (nat_w, nat_h) = layout_view_dims(layout, LOCKERS_VIEW_MAX_W, LOCKERS_VIEW_MAX_H);
+            let mut win_w = nat_w + RIGHT_PANEL_W + WIN_PAD * 3;
+            let mut win_h = nat_h + 40 + WIN_PAD * 2;
+
+            // Cap window at 80% of the monitor so it always fits on-screen.
+            if let Some((mon_w, mon_h)) = sdl_monitor_size() {
+                let max_w = (mon_w as f32 * 0.8).round() as i32;
+                let max_h = (mon_h as f32 * 0.8).round() as i32;
+                if win_w > max_w { win_w = max_w; }
+                if win_h > max_h { win_h = max_h; }
+            }
+
+            lv_sdl_window_set_resolution(&sim_disp, win_w, win_h);
+            (win_w, win_h)
+        } else {
+            (
+                lv_display_get_horizontal_resolution(&sim_disp),
+                lv_display_get_vertical_resolution(&sim_disp),
+            )
+        };
         lv_sdl_window_set_title(&sim_disp, &format!("Locker Simulator — {}", layout.name));
         std::mem::forget(sim_disp);
+
+        ui.win_w = win_w;
+        ui.win_h = win_h;
+        ui.layout = Some(layout.clone());
 
         let root_obj = LvObj { obj: ui.root };
         lv_obj_set_size(&root_obj, win_w, win_h);
         std::mem::forget(root_obj);
 
-        // Size the panel to the visible area (clamped window), not the full
-        // layout, so it scrolls when the content is larger than what fits.
-        let panel_w = view_w.min(win_w - RIGHT_PANEL_W - WIN_PAD * 3).max(100);
-        let panel_h = content_h.min(win_h - WIN_PAD * 2).max(100);
-        lv_obj_set_size(&panel, panel_w, panel_h);
+        // The lockers take everything the control panel does not need; cell
+        // scale below is derived from exactly this viewport, so the layout
+        // grows with the window instead of leaving the extra space empty.
+        let (view_w, view_h) = viewport_for_window(win_w, win_h);
+        lv_obj_set_size(&panel, view_w, view_h);
 
         let ctrl_obj = LvObj { obj: ui.ctrl_panel };
-        lv_obj_set_size(&ctrl_obj, RIGHT_PANEL_W, content_h);
+        lv_obj_set_size(&ctrl_obj, RIGHT_PANEL_W, view_h);
         std::mem::forget(ctrl_obj);
 
         let mut cell_uis: Vec<CellUi> = Vec::new();
@@ -305,7 +367,7 @@ pub fn rebuild_lockers(layout: &super::layouts::Layout) {
         // Dynamic column-major scale: separate horizontal and vertical
         // factors so cells fill the available height even when width is the
         // binding constraint (eliminates vertical gap under the lockers).
-        let (scale_w_f, scale_h_f) = column_scale_for_layout(layout);
+        let (scale_w_f, scale_h_f) = column_scale_for_layout(layout, view_w, view_h);
         let scale_w_px = |v: u32| ((v as f32) * scale_w_f).round() as i32;
         let scale_h_raw_px = |v: f32| (v * scale_h_f).round() as i32;
 
@@ -379,7 +441,7 @@ pub fn rebuild_lockers(layout: &super::layouts::Layout) {
                 }
                 std::mem::forget(locker_obj);
             } else if let Some(row_cells) = &locker.cells {
-                let (row_scale_w_f, row_scale_h_f) = row_scale_for_layout(layout);
+                let (row_scale_w_f, row_scale_h_f) = row_scale_for_layout(layout, view_w, view_h);
                 let scale_w_i = |v: u32| ((v as f32) * row_scale_w_f).round() as i32;
                 let scale_h_i = |v: u32| ((v as f32) * row_scale_h_f).round() as i32;
                 let col_w = scale_w_i(locker.width);
@@ -515,9 +577,13 @@ fn stretched_gap_px(column_stretch: f32, scale_h_f: f32) -> i32 {
 /// Pick row-major scale factors (separate horizontal and vertical) so
 /// row-major layouts also fill the viewport height instead of leaving a
 /// gap below the last cell. Width side: locker width + service rack +
-/// gaps should fit in `LOCKERS_VIEW_MAX_W`. Height side: tallest column
-/// (sum of cell heights) should fit in `LOCKERS_VIEW_MAX_H`.
-fn row_scale_for_layout(layout: &super::layouts::Layout) -> (f32, f32) {
+/// gaps should fit in `view_w`. Height side: tallest column (sum of cell
+/// heights) should fit in `view_h`.
+fn row_scale_for_layout(
+    layout: &super::layouts::Layout,
+    view_w: i32,
+    view_h: i32,
+) -> (f32, f32) {
     let max_raw_w: u32 = layout
         .lockers
         .iter()
@@ -539,12 +605,22 @@ fn row_scale_for_layout(layout: &super::layouts::Layout) -> (f32, f32) {
     }
 
     let target_w =
-        (LOCKERS_VIEW_MAX_W - SERVICE_RACK_W - LOCKER_GAP - LOCKER_GAP).max(60) as f32;
-    let target_h = (LOCKERS_VIEW_MAX_H - 8).max(60) as f32;
+        (view_w - SERVICE_RACK_W - LOCKER_GAP - LOCKER_GAP).max(60) as f32;
+    let target_h = (view_h - 8).max(60) as f32;
 
     let scale_w = (target_w / max_raw_w as f32).clamp(COLUMN_SCALE_MIN, COLUMN_SCALE_MAX);
     let scale_h = (target_h / max_raw_h as f32).clamp(COLUMN_SCALE_MIN, COLUMN_SCALE_MAX);
-    (scale_w, scale_h)
+    limit_axis_stretch(scale_w, scale_h)
+}
+
+/// Keep the two axis scales within `MAX_AXIS_STRETCH` of each other so a
+/// window that is much wider than the layout needs does not produce
+/// stretched-out cells.
+fn limit_axis_stretch(scale_w: f32, scale_h: f32) -> (f32, f32) {
+    (
+        scale_w.min(scale_h * MAX_AXIS_STRETCH),
+        scale_h.min(scale_w * MAX_AXIS_STRETCH),
+    )
 }
 
 /// Pick column-major scale factors that satisfy BOTH constraints:
@@ -555,7 +631,11 @@ fn row_scale_for_layout(layout: &super::layouts::Layout) -> (f32, f32) {
 /// available height even when width is the binding constraint, avoiding
 /// the vertical gap below short layouts. Both clamped to
 /// [`COLUMN_SCALE_MIN`, `COLUMN_SCALE_MAX`].
-fn column_scale_for_layout(layout: &super::layouts::Layout) -> (f32, f32) {
+fn column_scale_for_layout(
+    layout: &super::layouts::Layout,
+    view_w: i32,
+    view_h: i32,
+) -> (f32, f32) {
     // --- Width side: width of first VISIBLE_COLUMNS of the widest locker.
     let visible_raw_w: f32 = layout
         .lockers
@@ -588,20 +668,25 @@ fn column_scale_for_layout(layout: &super::layouts::Layout) -> (f32, f32) {
         return (COLUMN_SCALE as f32, COLUMN_SCALE as f32);
     }
 
-    let target_w = (LOCKERS_VIEW_MAX_W - LOCKER_GAP).max(100) as f32;
-    let target_h = (LOCKERS_VIEW_MAX_H - 8).max(100) as f32;
+    let target_w = (view_w - SERVICE_RACK_W - LOCKER_GAP - LOCKER_GAP).max(100) as f32;
+    let target_h = (view_h - 8).max(100) as f32;
 
     let scale_w = (target_w / visible_raw_w).clamp(COLUMN_SCALE_MIN, COLUMN_SCALE_MAX);
     let scale_h = (target_h / max_raw_col_h).clamp(COLUMN_SCALE_MIN, COLUMN_SCALE_MAX);
-    (scale_w, scale_h)
+    limit_axis_stretch(scale_w, scale_h)
 }
 
-/// Compute the pixel dimensions of the lockers viewport for `layout` using
-/// the same scale logic applied during rendering. Used by `rebuild_lockers`
-/// to autosize the SDL window so the entire layout is visible.
-fn layout_view_dims(layout: &super::layouts::Layout) -> (i32, i32) {
-    let (col_scale_w, col_scale_h) = column_scale_for_layout(layout);
-    let (row_scale_w, row_scale_h) = row_scale_for_layout(layout);
+/// Compute the pixel dimensions of the lockers content for `layout` when it is
+/// scaled into a `view_w` x `view_h` viewport, using the same scale logic
+/// applied during rendering. Used by `rebuild_lockers` to autosize the SDL
+/// window so the entire layout is visible.
+fn layout_view_dims(
+    layout: &super::layouts::Layout,
+    view_w: i32,
+    view_h: i32,
+) -> (i32, i32) {
+    let (col_scale_w, col_scale_h) = column_scale_for_layout(layout, view_w, view_h);
+    let (row_scale_w, row_scale_h) = row_scale_for_layout(layout, view_w, view_h);
 
     let mut total_w: i32 = 0;
     let mut max_h: i32 = 0;
@@ -672,6 +757,7 @@ fn catalog_window_dims(catalog: &super::layouts::LayoutCatalog) -> (i32, i32) {
 fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalog) -> LvObj {
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Layout");
+    lv_obj_set_width(&title, CTRL_ITEM_W);
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
     lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
     std::mem::forget(title);
@@ -684,14 +770,32 @@ fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalo
         .join("\n");
 
     let dd = lv_dropdown_create_obj(parent);
-    lv_obj_set_width(&dd, RIGHT_PANEL_W - px(10));
+    lv_obj_set_width(&dd, CTRL_ITEM_W);
+    lv_obj_set_style_text_font(&dd, &lv_font_montserrat_30(), 0);
     lv_dropdown_set_options_str(&dd, &options);
+
+    // The open list is reparented to the screen, so it inherits nothing from
+    // the dropdown and needs the font set on it directly. Its width is
+    // LV_SIZE_CONTENT, so long layout names stay readable.
+    let list = lv_dropdown_get_list_obj(&dd);
+    lv_obj_set_style_text_font(&list, &lv_font_montserrat_30(), 0);
+    std::mem::forget(list);
+
+    // CLICKED runs after the class handler has opened and aligned the list,
+    // which is the only point where its final geometry is known.
+    lv_obj_add_event_cb(
+        &dd,
+        dropdown_fit_list_cb,
+        LV_EVENT_CLICKED,
+        std::ptr::null_mut(),
+    );
 
     let active = super::active_layout();
     if let Some(active_name) = active {
         if let Some(idx) = catalog.layouts.iter().position(|l| l.name == active_name) {
             lv_dropdown_set_selected_idx(&dd, idx as u32);
         }
+        set_dropdown_label(&dd, &active_name);
     }
 
     lv_obj_add_event_cb(
@@ -707,10 +811,66 @@ fn create_layout_dropdown(parent: &LvObj, catalog: &super::layouts::LayoutCatalo
 unsafe extern "C" fn layout_dropdown_cb(e: *mut lv_event_t) {
     let dd = lv_event_get_target_obj(e);
     let name = lv_dropdown_get_selected_text(&dd);
+    if !name.is_empty() {
+        set_dropdown_label(&dd, &name);
+    }
     std::mem::forget(dd);
     if !name.is_empty() {
         super::apply_layout(&name);
     }
+}
+
+/// Longest layout name that still leaves the drop-down arrow uncovered at the
+/// panel font. LVGL draws the collapsed text over the arrow without clipping,
+/// so the string itself has to be short.
+const DROPDOWN_LABEL_MAX_CHARS: usize = 18;
+
+/// Show a shortened layout name in the collapsed dropdown; the popup still
+/// lists the full names.
+fn set_dropdown_label(dd: &LvObj, name: &str) {
+    let shown = if name.chars().count() > DROPDOWN_LABEL_MAX_CHARS {
+        let head: String = name.chars().take(DROPDOWN_LABEL_MAX_CHARS).collect();
+        // "..." and not U+2026: the Montserrat build here has no ellipsis glyph.
+        format!("{}...", head)
+    } else {
+        name.to_string()
+    };
+
+    let Ok(text) = std::ffi::CString::new(shown) else { return };
+    DROPDOWN_LABEL.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        *slot = Some(text);
+        let ptr = slot.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null());
+        // SAFETY: the CString lives in DROPDOWN_LABEL for as long as the UI does.
+        unsafe { lv_dropdown_set_text_static(dd, ptr) };
+    });
+}
+
+/// Nudge an opened dropdown list back inside the window. LVGL aligns it to the
+/// dropdown's left edge and sizes it to its content, which overflows the right
+/// edge for a narrow dropdown with long options.
+unsafe extern "C" fn dropdown_fit_list_cb(e: *mut lv_event_t) {
+    let dd = lv_event_get_target_obj(e);
+    let list = lv_dropdown_get_list_obj(&dd);
+    std::mem::forget(dd);
+
+    let win_w = UI.with(|ui_cell| {
+        let Ok(ui_ref) = ui_cell.try_borrow() else { return None };
+        ui_ref.as_ref().map(|u| u.win_w)
+    });
+
+    if let Some(win_w) = win_w {
+        let max_w = win_w - WIN_PAD * 2;
+        if lv_obj_get_width(&list) > max_w {
+            lv_obj_set_width(&list, max_w);
+        }
+        let x = lv_obj_get_x(&list);
+        let overflow = x + lv_obj_get_width(&list) - (win_w - WIN_PAD);
+        if overflow > 0 {
+            lv_obj_set_x(&list, (x - overflow).max(WIN_PAD));
+        }
+    }
+    std::mem::forget(list);
 }
 
 fn create_cell_widget(
@@ -786,6 +946,7 @@ fn create_keypad(parent: &LvObj) {
     // Keypad title
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Keypad");
+    lv_obj_set_width(&title, CTRL_ITEM_W);
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
     lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
 
@@ -798,15 +959,14 @@ fn create_keypad(parent: &LvObj) {
     ];
 
     let grid = lv_obj_create(parent);
-    let btn_size = px(40);
-    let gap = px(4);
-    let pad = px(5);
-    let grid_w = btn_size * 4 + gap * 3 + pad * 2;
-    let grid_h = btn_size * 4 + gap * 3 + pad * 2;
+    let btn_size = KEY_BTN_SIZE;
+    let gap = KEY_GAP;
+    let grid_w = CTRL_ITEM_W + KEYPAD_PAD * 2;
+    let grid_h = btn_size * 4 + gap * 3 + KEYPAD_PAD * 2;
     lv_obj_set_size(&grid, grid_w, grid_h);
     lv_obj_set_style_bg_opa(&grid, 0, 0);
     lv_obj_set_style_border_width(&grid, 0, 0);
-    lv_obj_set_style_pad_all(&grid, px(5), 0);
+    lv_obj_set_style_pad_all(&grid, KEYPAD_PAD, 0);
     lv_obj_set_style_pad_row(&grid, gap, 0);
     lv_obj_set_style_pad_column(&grid, gap, 0);
     lv_obj_set_flex_flow(&grid, LV_FLEX_FLOW_ROW_WRAP);
@@ -823,6 +983,7 @@ fn create_keypad(parent: &LvObj) {
             lv_label_set_text(&label, key_label);
             lv_obj_align(&label, LvAlign::Center, 0, 0);
             lv_obj_set_style_text_color(&label, lv_color_hex_fn(0xEEEEEE), 0);
+            lv_obj_set_style_text_font(&label, &lv_font_montserrat_30(), 0);
 
             // Store key char in user_data (fits in a pointer)
             let key_char = key_label.chars().next().unwrap();
@@ -846,34 +1007,44 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
     // Title
     let title = lv_label_create(parent);
     lv_label_set_text(&title, "Barcode Scanner");
+    lv_obj_set_width(&title, CTRL_ITEM_W);
     lv_obj_set_style_text_color(&title, lv_color_hex_fn(0xCCCCCC), 0);
     lv_obj_set_style_text_font(&title, &lv_font_montserrat_30(), 0);
 
-    // Container
+    // Container. Padded like the keypad grid so the full-width button can grow
+    // on press without being clipped.
     let cont = lv_obj_create(parent);
-    lv_obj_set_width(&cont, RIGHT_PANEL_W);
-    lv_obj_set_height(&cont, px(90));
+    lv_obj_set_width(&cont, CTRL_ITEM_W + KEYPAD_PAD * 2);
+    lv_obj_set_height(&cont, px(100));
     lv_obj_set_style_bg_opa(&cont, 0, 0);
     lv_obj_set_style_border_width(&cont, 0, 0);
-    lv_obj_set_style_pad_all(&cont, 0, 0);
+    lv_obj_set_style_pad_all(&cont, KEYPAD_PAD, 0);
     lv_obj_set_style_pad_row(&cont, px(8), 0);
     lv_obj_set_flex_flow(&cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(&cont, LV_OBJ_FLAG_SCROLLABLE);
 
     // Text input
     let input = lv_textarea_create(&cont);
-    lv_obj_set_width(&input, RIGHT_PANEL_W - px(10));
+    lv_obj_set_width(&input, CTRL_ITEM_W);
     lv_obj_set_height(&input, px(36));
     lv_textarea_set_placeholder_text(&input, "Enter barcode...");
     lv_textarea_set_one_line(&input, true);
     lv_obj_add_flag(&input, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_set_style_bg_color(&input, lv_color_hex_fn(0x3A3A4E), 0);
     lv_obj_set_style_text_color(&input, lv_color_hex_fn(0xEEEEEE), 0);
+    lv_obj_set_style_text_font(&input, &lv_font_montserrat_30(), 0);
     lv_obj_set_style_border_color(&input, lv_color_hex_fn(0x666666), 0);
+    // Wider, high-contrast caret; the theme only styles it while focused.
+    lv_obj_set_style_border_width(&input, px(2), LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(
+        &input,
+        lv_color_hex_fn(0xFFFFFF),
+        LV_PART_CURSOR | LV_STATE_FOCUSED,
+    );
 
     // Scan button
     let btn = lv_button_create(&cont);
-    lv_obj_set_width(&btn, RIGHT_PANEL_W - px(10));
+    lv_obj_set_width(&btn, CTRL_ITEM_W);
     lv_obj_set_height(&btn, px(36));
     lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x1565C0), 0);
     lv_obj_set_style_radius(&btn, px(6), 0);
@@ -882,6 +1053,7 @@ fn create_barcode_scanner(parent: &LvObj) -> (LvObj, LvObj) {
     lv_label_set_text(&btn_label, "Scan");
     lv_obj_align(&btn_label, LvAlign::Center, 0, 0);
     lv_obj_set_style_text_color(&btn_label, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(&btn_label, &lv_font_montserrat_30(), 0);
 
     // Store textarea pointer as user_data for the button callback
     lv_obj_add_event_cb(&btn, scan_click_cb, LV_EVENT_CLICKED, input.obj as *mut c_void);
@@ -924,16 +1096,17 @@ const SYMBOL_SETTINGS: &str = "\u{F013}";
 /// pinned to the corner even when the window is resized on layout switches.
 fn create_settings_button(screen: &LvObj) {
     let btn = lv_button_create(screen);
-    lv_obj_set_size(&btn, px(30), px(30));
-    lv_obj_align(&btn, LvAlign::TopRight, -px(6), px(6));
+    lv_obj_set_size(&btn, SETTINGS_BTN_SIZE, SETTINGS_BTN_SIZE);
+    lv_obj_align(&btn, LvAlign::TopRight, -SETTINGS_BTN_MARGIN, SETTINGS_BTN_MARGIN);
     lv_obj_set_style_bg_color(&btn, lv_color_hex_fn(0x455A64), 0);
-    lv_obj_set_style_radius(&btn, px(15), 0);
+    lv_obj_set_style_radius(&btn, SETTINGS_BTN_SIZE / 2, 0);
     lv_obj_set_style_pad_all(&btn, 0, 0);
 
     let label = lv_label_create(&btn);
     lv_label_set_text(&label, SYMBOL_SETTINGS);
     lv_obj_align(&label, LvAlign::Center, 0, 0);
     lv_obj_set_style_text_color(&label, lv_color_hex_fn(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(&label, &lv_font_montserrat_30(), 0);
 
     lv_obj_add_event_cb(&btn, settings_click_cb, LV_EVENT_CLICKED, std::ptr::null_mut());
     std::mem::forget(label);
