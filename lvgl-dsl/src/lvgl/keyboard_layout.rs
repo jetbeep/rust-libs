@@ -128,6 +128,10 @@ pub const CTRL_HIDDEN: u32 = 0x0010;
 /// exactly one character.  Matches LVGL v9.x.
 pub const CTRL_NO_REPEAT: u32 = 0x0020;
 
+/// `LV_BUTTONMATRIX_CTRL_CLICK_TRIG` — emit `LV_EVENT_VALUE_CHANGED` on
+/// release instead of on press.  Matches LVGL v9.x.
+pub const CTRL_CLICK_TRIG: u32 = 0x0200;
+
 /// Width-1 key (1 relative unit) — standard letter keys.
 pub const CTRL_W1: u32 = 1;
 /// Width-2 key (2 relative units) — action keys such as `ABC` and `Del`.

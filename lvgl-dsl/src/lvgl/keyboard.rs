@@ -6,8 +6,8 @@ use super::color::Color;
 use super::corner_radius::CornerRadius;
 use super::event::{Event, LvEventCode};
 use super::keyboard_layout::{
-    CTRL_CHECKED, CTRL_DISABLED, CTRL_NO_REPEAT, CTRLMAP_SPECIAL, KEY_CONTINUE, KEYMAP_SPECIAL,
-    KeyMap, KeyboardLayout, KeyboardLocale, LvKeyboardMode,
+    CTRL_CHECKED, CTRL_CLICK_TRIG, CTRL_DISABLED, CTRL_NO_REPEAT, CTRLMAP_SPECIAL, KEY_CONTINUE,
+    KEYMAP_SPECIAL, KeyMap, KeyboardLayout, KeyboardLocale, LvKeyboardMode,
 };
 
 // Most of these constants are used in cfg(not(test)) event handler
@@ -62,18 +62,26 @@ fn preferred_locale_user_mode(locale: KeyboardLocale) -> Option<u32> {
     }
 }
 
-/// Marks every key as non-repeating so holding a key inserts one character.
+/// Ctrl bits every key carries: fire on release, and only once per press.
 ///
-/// Without this, `lv_buttonmatrix` re-emits `LV_EVENT_VALUE_CHANGED` on every
-/// `LV_EVENT_LONG_PRESSED_REPEAT` tick (~100 ms), which floods the text area
-/// and any search bound to it. The accent popup is unaffected: it listens on
-/// `LV_EVENT_LONG_PRESSED`, which the input device sends regardless.
+/// `CLICK_TRIG` moves `LV_EVENT_VALUE_CHANGED` from press to release. That is
+/// what makes the accent popup work without hacks: when a long press opens the
+/// popup, [`accent_long_press_cb`] calls `lv_indev_wait_release`, LVGL turns
+/// the pending release into `LV_EVENT_PRESS_LOST`, and the base character is
+/// never inserted in the first place.
+///
+/// `NO_REPEAT` suppresses the separate `LV_EVENT_VALUE_CHANGED` burst LVGL
+/// emits on every `LV_EVENT_LONG_PRESSED_REPEAT` tick (~100 ms), which is not
+/// gated by `CLICK_TRIG`.
+const KEY_EVENT_CTRL: u32 = CTRL_CLICK_TRIG | CTRL_NO_REPEAT;
+
+/// Applies [`KEY_EVENT_CTRL`] to every key of `obj`.
 ///
 /// LVGL rebuilds the ctrl bits from the mode's ctrl map on every map, mode or
 /// popover change, so this has to run again after each of them.
-fn apply_no_repeat_to_obj(obj: *mut c_bindings::lv_obj_t) {
-    // SAFETY: obj is a live keyboard object owned by the caller.
-    unsafe { c_bindings::lv_buttonmatrix_set_button_ctrl_all(obj, CTRL_NO_REPEAT) };
+fn apply_key_event_ctrl(obj: *mut c_bindings::lv_obj_t) {
+    // SAFETY: obj is a live buttonmatrix-derived object owned by the caller.
+    unsafe { c_bindings::lv_buttonmatrix_set_button_ctrl_all(obj, KEY_EVENT_CTRL) };
 }
 
 fn set_keyboard_mode(obj: *mut c_bindings::lv_obj_t, mode_index: u32) {
@@ -82,7 +90,7 @@ fn set_keyboard_mode(obj: *mut c_bindings::lv_obj_t, mode_index: u32) {
         "invalid lv_keyboard_mode_t index {mode_index}"
     );
     unsafe { c_bindings::lv_keyboard_set_mode(obj, mode_index) };
-    apply_no_repeat_to_obj(obj);
+    apply_key_event_ctrl(obj);
 }
 
 fn set_keyboard_map(
@@ -96,7 +104,7 @@ fn set_keyboard_map(
         "invalid lv_keyboard_mode_t index {mode_index}"
     );
     unsafe { c_bindings::lv_keyboard_set_map(obj, mode_index, map, ctrl) };
-    apply_no_repeat_to_obj(obj);
+    apply_key_event_ctrl(obj);
 }
 
 fn current_continue_state() -> Option<ContinueState> {
@@ -385,16 +393,6 @@ type KeyLabelMirrorMap =
 /// bounded to ≤10 modes total.
 static KEY_LABEL_MIRRORS: LvglCell<KeyLabelMirrorMap> =
     LvglCell::new(alloc::collections::BTreeMap::new());
-
-/// Pure helper extracted from [`accent_long_press_cb`] so the "undo base
-/// char after popup opens" behaviour is unit-testable.
-///
-/// Returns `true` iff long-pressing `ch` should open an accent popup —
-/// equivalent to "the base character was just inserted by the press and
-/// must be retracted before the popup takes over".
-fn should_undo_base_char_after_popup(ch: &core::ffi::CStr) -> bool {
-    super::keyboard_layout::accent_variants(ch).is_some()
-}
 
 /// Returns `false` if `label` collides with a label in the reserved
 /// action-key set dispatched by `custom_kb_event_cb` (layout/language/
@@ -698,15 +696,10 @@ unsafe extern "C" fn accent_long_press_cb(e: *mut c_bindings::lv_event_t) {
     let txt = unsafe { core::ffi::CStr::from_ptr(txt_ptr) };
 
     // Look up accent variants for this key.
-    // Use the same predicate (`accent_variants(..).is_some()`) for both
-    // "does this need a popup?" and "did the regular VALUE_CHANGED handler
-    // already insert the base char that we need to undo?". The helper
-    // [`should_undo_base_char_after_popup`] is the testable form.
     let variants = match accent_variants(txt) {
         Some(v) => v,
         None => return,
     };
-    debug_assert!(should_undo_base_char_after_popup(txt));
 
     // Dismiss any previous popup.
     dismiss_accent_popup();
@@ -739,6 +732,7 @@ unsafe extern "C" fn accent_long_press_cb(e: *mut c_bindings::lv_event_t) {
             variants.as_ptr() as *const *const core::ffi::c_char,
         );
     }
+    apply_key_event_ctrl(popup);
 
     // Compute number of buttons (map entries excluding the "" terminator).
     let btn_count = variants.len().saturating_sub(1) as i32;
@@ -822,25 +816,9 @@ unsafe extern "C" fn accent_long_press_cb(e: *mut c_bindings::lv_event_t) {
         }
     }
 
-    // Bug 1: lv_buttonmatrix fires LV_EVENT_VALUE_CHANGED on PRESS (not
-    // release), so the regular `custom_kb_event_cb` already inserted the
-    // base character ~400 ms before LV_EVENT_LONG_PRESSED fired. Now that
-    // the popup has been successfully created, retract that base char so
-    // the user sees only the accent they ultimately choose (or nothing if
-    // they dismiss the popup by tapping elsewhere).
-    unsafe {
-        let ta = c_bindings::lv_keyboard_get_textarea(obj);
-        if !ta.is_null() {
-            c_bindings::lv_textarea_delete_char(ta);
-        }
-    }
-
-    // Tell LVGL to ignore the rest of this press from the active input
-    // device until the user lifts their finger. Otherwise the touchscreen
-    // keeps firing LV_EVENT_LONG_PRESSED_REPEAT every ~100 ms, each of
-    // which the keyboard turns into LV_EVENT_VALUE_CHANGED — that path
-    // dismisses the freshly-opened popup and inserts the base character
-    // repeatedly ("aaaa…").
+    // Discard the rest of this press. LVGL turns the pending release into
+    // LV_EVENT_PRESS_LOST, so with CTRL_CLICK_TRIG the key never reaches
+    // LV_EVENT_VALUE_CHANGED and the base character is never inserted.
     unsafe {
         let indev = c_bindings::lv_indev_active();
         if !indev.is_null() {
@@ -2046,7 +2024,7 @@ impl Keyboard {
         }
         // SAFETY: obj is non-null and valid for the lifetime of this widget.
         unsafe { c_bindings::lv_keyboard_set_popovers(self.lv_obj().raw(), enabled) }
-        apply_no_repeat_to_obj(self.lv_obj().raw());
+        apply_key_event_ctrl(self.lv_obj().raw());
         self
     }
 
@@ -2768,55 +2746,61 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Key repeat
+    // Key event trigger
     // -----------------------------------------------------------------------
 
-    fn contains_no_repeat_all(calls: &[LvCall]) -> bool {
+    fn contains_key_event_ctrl(calls: &[LvCall]) -> bool {
         calls.iter().any(|c| {
             matches!(
                 c,
                 LvCall::ButtonMatrixSetButtonCtrlAll { ctrl, .. }
-                    if *ctrl == crate::lvgl::keyboard_layout::CTRL_NO_REPEAT
+                    if *ctrl == super::KEY_EVENT_CTRL
             )
         })
     }
 
     #[test]
-    fn new_marks_all_keys_no_repeat() {
+    fn key_event_ctrl_triggers_on_release_and_never_repeats() {
+        use crate::lvgl::keyboard_layout::{CTRL_CLICK_TRIG, CTRL_NO_REPEAT};
+        assert_eq!(super::KEY_EVENT_CTRL, CTRL_CLICK_TRIG | CTRL_NO_REPEAT);
+    }
+
+    #[test]
+    fn new_applies_key_event_ctrl() {
         let screen = setup();
         let kb = Keyboard::new(&screen);
         let calls = spy_drain();
         assert!(
-            contains_no_repeat_all(&calls),
-            "construction must disable long-press repeat, got: {calls:?}"
+            contains_key_event_ctrl(&calls),
+            "construction must make keys click-triggered and non-repeating, got: {calls:?}"
         );
         drop(kb);
     }
 
     #[test]
-    fn layout_switch_reapplies_no_repeat() {
+    fn layout_switch_reapplies_key_event_ctrl() {
         let screen = setup();
         let kb = Keyboard::new(&screen);
         spy_drain();
         kb.layout(KeyboardLayout::Locale(KeyboardLocale::Fr));
         let calls = spy_drain();
         assert!(
-            contains_no_repeat_all(&calls),
-            "LVGL rebuilds ctrl bits on map change; NO_REPEAT must be re-applied, got: {calls:?}"
+            contains_key_event_ctrl(&calls),
+            "LVGL rebuilds ctrl bits on map change; they must be re-applied, got: {calls:?}"
         );
         drop(kb);
     }
 
     #[test]
-    fn popover_keys_reapplies_no_repeat() {
+    fn popover_keys_reapplies_key_event_ctrl() {
         let screen = setup();
         let kb = Keyboard::new(&screen);
         spy_drain();
         kb.popover_keys(true);
         let calls = spy_drain();
         assert!(
-            contains_no_repeat_all(&calls),
-            "lv_keyboard_set_popovers rebuilds ctrl bits; NO_REPEAT must be re-applied, got: {calls:?}"
+            contains_key_event_ctrl(&calls),
+            "lv_keyboard_set_popovers rebuilds ctrl bits; they must be re-applied, got: {calls:?}"
         );
         drop(kb);
     }
@@ -3364,27 +3348,6 @@ mod tests {
                 .any(|&m| m == crate::lvgl::keyboard_layout::LvKeyboardMode::Number as u32),
             "locale(Numeric) must emit Number mode; got: {mode_calls:?}"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // Bug 1: long-press popup must retract the just-inserted base char.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn should_undo_base_char_after_popup_true_for_accent_keys() {
-        // "a" has accent variants — the popup will open, so the base char
-        // inserted on PRESS must be retracted.
-        assert!(super::should_undo_base_char_after_popup(c"a"));
-        assert!(super::should_undo_base_char_after_popup(c"e"));
-    }
-
-    #[test]
-    fn should_undo_base_char_after_popup_false_for_non_accent_keys() {
-        // No popup → nothing to retract. The action key labels are not
-        // accent-eligible either.
-        assert!(!super::should_undo_base_char_after_popup(c"q"));
-        assert!(!super::should_undo_base_char_after_popup(c"Del"));
-        assert!(!super::should_undo_base_char_after_popup(c"Continue"));
     }
 
     // -----------------------------------------------------------------------
