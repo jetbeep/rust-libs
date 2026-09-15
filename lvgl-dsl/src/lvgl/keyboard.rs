@@ -6,8 +6,8 @@ use super::color::Color;
 use super::corner_radius::CornerRadius;
 use super::event::{Event, LvEventCode};
 use super::keyboard_layout::{
-    CTRL_CHECKED, CTRL_DISABLED, CTRLMAP_SPECIAL, KEY_CONTINUE, KEYMAP_SPECIAL, KeyMap,
-    KeyboardLayout, KeyboardLocale, LvKeyboardMode,
+    CTRL_CHECKED, CTRL_DISABLED, CTRL_NO_REPEAT, CTRLMAP_SPECIAL, KEY_CONTINUE, KEYMAP_SPECIAL,
+    KeyMap, KeyboardLayout, KeyboardLocale, LvKeyboardMode,
 };
 
 // Most of these constants are used in cfg(not(test)) event handler
@@ -62,12 +62,27 @@ fn preferred_locale_user_mode(locale: KeyboardLocale) -> Option<u32> {
     }
 }
 
+/// Marks every key as non-repeating so holding a key inserts one character.
+///
+/// Without this, `lv_buttonmatrix` re-emits `LV_EVENT_VALUE_CHANGED` on every
+/// `LV_EVENT_LONG_PRESSED_REPEAT` tick (~100 ms), which floods the text area
+/// and any search bound to it. The accent popup is unaffected: it listens on
+/// `LV_EVENT_LONG_PRESSED`, which the input device sends regardless.
+///
+/// LVGL rebuilds the ctrl bits from the mode's ctrl map on every map, mode or
+/// popover change, so this has to run again after each of them.
+fn apply_no_repeat_to_obj(obj: *mut c_bindings::lv_obj_t) {
+    // SAFETY: obj is a live keyboard object owned by the caller.
+    unsafe { c_bindings::lv_buttonmatrix_set_button_ctrl_all(obj, CTRL_NO_REPEAT) };
+}
+
 fn set_keyboard_mode(obj: *mut c_bindings::lv_obj_t, mode_index: u32) {
     debug_assert!(
         mode_index < 8,
         "invalid lv_keyboard_mode_t index {mode_index}"
     );
     unsafe { c_bindings::lv_keyboard_set_mode(obj, mode_index) };
+    apply_no_repeat_to_obj(obj);
 }
 
 fn set_keyboard_map(
@@ -81,6 +96,7 @@ fn set_keyboard_map(
         "invalid lv_keyboard_mode_t index {mode_index}"
     );
     unsafe { c_bindings::lv_keyboard_set_map(obj, mode_index, map, ctrl) };
+    apply_no_repeat_to_obj(obj);
 }
 
 fn current_continue_state() -> Option<ContinueState> {
@@ -844,7 +860,9 @@ unsafe extern "C" fn back_outline_draw_task_cb(e: *mut c_bindings::lv_event_t) {
         return;
     }
 
-    let outline = unsafe { KB_STATE.get() }.as_ref().and_then(|state| state.back_outline);
+    let outline = unsafe { KB_STATE.get() }
+        .as_ref()
+        .and_then(|state| state.back_outline);
     let Some(outline) = outline else {
         return;
     };
@@ -2028,6 +2046,7 @@ impl Keyboard {
         }
         // SAFETY: obj is non-null and valid for the lifetime of this widget.
         unsafe { c_bindings::lv_keyboard_set_popovers(self.lv_obj().raw(), enabled) }
+        apply_no_repeat_to_obj(self.lv_obj().raw());
         self
     }
 
@@ -2746,6 +2765,60 @@ mod tests {
                 .any(|c| matches!(c, LvCall::ButtonMatrixSetPopovers { en: true, .. })),
             "expected ButtonMatrixSetPopovers(true), got: {calls:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Key repeat
+    // -----------------------------------------------------------------------
+
+    fn contains_no_repeat_all(calls: &[LvCall]) -> bool {
+        calls.iter().any(|c| {
+            matches!(
+                c,
+                LvCall::ButtonMatrixSetButtonCtrlAll { ctrl, .. }
+                    if *ctrl == crate::lvgl::keyboard_layout::CTRL_NO_REPEAT
+            )
+        })
+    }
+
+    #[test]
+    fn new_marks_all_keys_no_repeat() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let calls = spy_drain();
+        assert!(
+            contains_no_repeat_all(&calls),
+            "construction must disable long-press repeat, got: {calls:?}"
+        );
+        drop(kb);
+    }
+
+    #[test]
+    fn layout_switch_reapplies_no_repeat() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        spy_drain();
+        kb.layout(KeyboardLayout::Locale(KeyboardLocale::Fr));
+        let calls = spy_drain();
+        assert!(
+            contains_no_repeat_all(&calls),
+            "LVGL rebuilds ctrl bits on map change; NO_REPEAT must be re-applied, got: {calls:?}"
+        );
+        drop(kb);
+    }
+
+    #[test]
+    fn popover_keys_reapplies_no_repeat() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        spy_drain();
+        kb.popover_keys(true);
+        let calls = spy_drain();
+        assert!(
+            contains_no_repeat_all(&calls),
+            "lv_keyboard_set_popovers rebuilds ctrl bits; NO_REPEAT must be re-applied, got: {calls:?}"
+        );
+        drop(kb);
     }
 
     // -----------------------------------------------------------------------

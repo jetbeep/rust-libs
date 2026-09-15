@@ -123,6 +123,11 @@ pub type CtrlMap = [u32];
 /// Combine with a width constant: `CTRL_HIDDEN | CTRL_W1`.
 pub const CTRL_HIDDEN: u32 = 0x0010;
 
+/// `LV_BUTTONMATRIX_CTRL_NO_REPEAT` — suppresses the `LV_EVENT_VALUE_CHANGED`
+/// burst LVGL emits on `LV_EVENT_LONG_PRESSED_REPEAT`, so a held key types
+/// exactly one character.  Matches LVGL v9.x.
+pub const CTRL_NO_REPEAT: u32 = 0x0020;
+
 /// Width-1 key (1 relative unit) — standard letter keys.
 pub const CTRL_W1: u32 = 1;
 /// Width-2 key (2 relative units) — action keys such as `ABC` and `Del`.
