@@ -30,6 +30,7 @@ mod flex;
 mod font;
 pub mod image;
 mod imagebutton;
+pub mod indev;
 mod keyboard;
 mod keyboard_layout;
 mod keyboard_theme;

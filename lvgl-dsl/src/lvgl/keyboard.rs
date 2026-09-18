@@ -632,7 +632,6 @@ fn delete_accent_popup_if_valid(popup: *mut c_bindings::lv_obj_t) {
 }
 
 /// Destroys the active accent popup (if any) and clears the state.
-#[cfg(not(test))]
 fn dismiss_accent_popup() {
     // SAFETY: called from the LVGL thread only (event callback context).
     let state = unsafe { KB_STATE.get_mut() };
@@ -870,16 +869,16 @@ unsafe extern "C" fn back_outline_draw_task_cb(e: *mut c_bindings::lv_event_t) {
 ///
 /// Replaces LVGL's `lv_keyboard_def_event_cb` to support the new layout keys:
 /// `ABC`, `abc`, `⌫`, `Back`, `Continue`, `🌐`, `123`.
-#[cfg(not(test))]
 unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
-    // If an accent popup is active, dismiss it and suppress this key event.
+    // An open accent popup is stale the moment another key is tapped: close it,
+    // then let the tap type its character. Swallowing the tap cost the courier
+    // an extra press every time the popup had opened by accident.
     // SAFETY: called from the LVGL thread (event callback).
     let popup_active = unsafe { KB_STATE.get() }
         .as_ref()
         .map_or(false, |st| !st.accent_popup.is_null());
     if popup_active {
         dismiss_accent_popup();
-        return;
     }
 
     let obj = unsafe { c_bindings::lv_event_get_target(e) as *mut c_bindings::lv_obj_t };
@@ -2222,6 +2221,109 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == popup as usize)),
             "Drop must delete the surviving accent popup, got: {calls:?}"
+        );
+    }
+
+    /// Logical button id of `label` in the map currently installed on `obj`.
+    fn button_id_for(obj: *mut crate::c_bindings::lv_obj_t, label: &core::ffi::CStr) -> u32 {
+        for id in 0..128u32 {
+            let ptr = unsafe { crate::c_bindings::lv_buttonmatrix_get_button_text(obj, id) };
+            if ptr.is_null() {
+                break;
+            }
+            let text = unsafe { core::ffi::CStr::from_ptr(ptr) };
+            if text.to_bytes().is_empty() {
+                break;
+            }
+            if text == label {
+                return id;
+            }
+        }
+        panic!("{label:?} is not in the installed keyboard map");
+    }
+
+    /// Fire a VALUE_CHANGED for `btn_id` through the production key handler,
+    /// with an accent popup open. Returns the popup that was open.
+    fn tap_key_with_open_popup(
+        screen: &KbTestScreen,
+        obj: *mut crate::c_bindings::lv_obj_t,
+        btn_id: u32,
+    ) -> *mut crate::c_bindings::lv_obj_t {
+        let popup = unsafe { crate::c_bindings::lv_buttonmatrix_create(screen.lv_obj().raw()) };
+        unsafe {
+            super::KB_STATE.get_mut().as_mut().unwrap().accent_popup = popup;
+            crate::c_bindings::lv_obj_add_event_cb(
+                obj,
+                Some(super::custom_kb_event_cb),
+                LvEventCode::ValueChanged.as_u32(),
+                core::ptr::null_mut(),
+            );
+        }
+        crate::c_bindings::set_selected_button_for_test(obj, btn_id);
+        spy_drain();
+        crate::c_bindings::spy_emit_event(obj, LvEventCode::ValueChanged.as_u32());
+        popup
+    }
+
+    /// Regression: the tap that dismisses an accent popup must still type its
+    /// character. Swallowing it made the user press twice — once to close the
+    /// popup, once to type — every time a normal tap was misread as a long
+    /// press and opened the popup by accident.
+    #[test]
+    fn a_character_tap_dismisses_the_accent_popup_and_still_inserts() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let obj = kb.lv_obj().raw();
+        install_lc_map(obj, KeyboardLocale::EnUs);
+        let btn_id = button_id_for(obj, c"a");
+
+        let popup = tap_key_with_open_popup(&screen, obj, btn_id);
+
+        let calls = spy_drain();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == popup as usize)),
+            "the tap must delete the open accent popup, got: {calls:?}"
+        );
+        assert!(
+            unsafe { super::KB_STATE.get() }
+                .as_ref()
+                .unwrap()
+                .accent_popup
+                .is_null(),
+            "the dismissed popup must be cleared from KB_STATE"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::KeyboardDefEventCb)),
+            "the same event must still reach character insertion, got: {calls:?}"
+        );
+    }
+
+    /// Same rule for the layout-action keys: dismissing the popup must not eat
+    /// the tap that requested the uppercase map.
+    #[test]
+    fn an_action_tap_dismisses_the_accent_popup_and_still_switches_the_map() {
+        let screen = setup();
+        let kb = Keyboard::new(&screen);
+        let obj = kb.lv_obj().raw();
+        install_lc_map(obj, KeyboardLocale::EnUs);
+        let btn_id = button_id_for(obj, super::KEY_ABC);
+
+        let popup = tap_key_with_open_popup(&screen, obj, btn_id);
+
+        let calls = spy_drain();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, LvCall::ObjDelete { obj } if *obj == popup as usize)),
+            "the tap must delete the open accent popup, got: {calls:?}"
+        );
+        assert!(
+            unsafe { super::KB_STATE.get() }.as_ref().unwrap().uppercase,
+            "the same event must still reach the action dispatch"
         );
     }
 
