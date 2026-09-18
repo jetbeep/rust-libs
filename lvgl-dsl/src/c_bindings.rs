@@ -996,6 +996,10 @@ mod mock {
             indev: usize,
             ms: u16,
         },
+        TextAreaDeleteChar {
+            obj: usize,
+        },
+        KeyboardDefEventCb,
         ObjMoveToIndex {
             obj: usize,
             index: i32,
@@ -1576,6 +1580,14 @@ mod mock {
     pub fn set_child_count(obj: *mut lv_obj_t, n: u32) {
         CHILD_COUNTS.with(|m| {
             m.borrow_mut().insert(obj as usize, n);
+        });
+    }
+
+    /// Test helper: which button `lv_buttonmatrix_get_selected_button` reports
+    /// for `obj`, standing in for the press LVGL would have registered.
+    pub fn set_selected_button_for_test(obj: *mut lv_obj_t, btn_id: u32) {
+        BUTTONMATRIX_SELECTED.with(|m| {
+            m.borrow_mut().insert(obj as usize, btn_id);
         });
     }
 
@@ -2954,7 +2966,12 @@ mod mock {
                 })
         })
     }
-    pub unsafe fn lv_textarea_delete_char(_obj: *mut lv_obj_t) {}
+    pub unsafe fn lv_textarea_delete_char(obj: *mut lv_obj_t) {
+        SPY.with(|s| {
+            s.borrow_mut()
+                .push(LvCall::TextAreaDeleteChar { obj: obj as usize })
+        });
+    }
     pub unsafe fn lv_textarea_add_char(_obj: *mut lv_obj_t, _c: u32) {}
     pub unsafe fn lv_textarea_add_text(_obj: *mut lv_obj_t, _txt: *const core::ffi::c_char) {}
     pub unsafe fn lv_textarea_cursor_left(_obj: *mut lv_obj_t) {}
@@ -2981,7 +2998,9 @@ mod mock {
         });
         true
     }
-    pub unsafe extern "C" fn lv_keyboard_def_event_cb(_e: *mut lv_event_t) {}
+    pub unsafe extern "C" fn lv_keyboard_def_event_cb(_e: *mut lv_event_t) {
+        SPY.with(|s| s.borrow_mut().push(LvCall::KeyboardDefEventCb));
+    }
 
     // ---------------------------------------------------------
     // Keyboard popovers
