@@ -633,6 +633,11 @@ mod desktop {
         /// pointer/finger. Used to "swallow" the rest of a long-press so it
         /// can't generate further LV_EVENT_VALUE_CHANGED auto-repeats.
         pub fn lv_indev_wait_release(indev: *mut lv_indev_t);
+        /// Walks the registered input devices: pass NULL to get the first one,
+        /// then the previous result to advance. NULL ends the list.
+        pub fn lv_indev_get_next(indev: *mut lv_indev_t) -> *mut lv_indev_t;
+        /// Press duration (ms) after which `LV_EVENT_LONG_PRESSED` fires.
+        pub fn lv_indev_set_long_press_time(indev: *mut lv_indev_t, long_press_time: u16);
 
         // ---- Memory diagnostics ----
         /// Collect memory pool statistics into `mon_p`.
@@ -986,6 +991,10 @@ mod mock {
         IndevActive,
         IndevWaitRelease {
             indev: usize,
+        },
+        IndevSetLongPressTime {
+            indev: usize,
+            ms: u16,
         },
         ObjMoveToIndex {
             obj: usize,
@@ -3604,6 +3613,37 @@ mod mock {
         });
     }
 
+    /// Mock-only: the value last written by `lv_indev_set_long_press_time`,
+    /// seeded with LVGL's own default so a test can tell "untouched" apart
+    /// from "explicitly tuned".
+    thread_local! {
+        static MOCK_LONG_PRESS_MS: Cell<u16> = const { Cell::new(400) };
+    }
+
+    /// Test helper: the long-press threshold currently applied to the indev.
+    pub fn long_press_time_for_test() -> u16 {
+        MOCK_LONG_PRESS_MS.with(|c| c.get())
+    }
+
+    /// Mock list walk: yields the single mock indev once, then terminates.
+    pub unsafe fn lv_indev_get_next(indev: *mut lv_indev_t) -> *mut lv_indev_t {
+        if indev.is_null() {
+            MOCK_ACTIVE_INDEV.with(|c| c.get())
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+
+    pub unsafe fn lv_indev_set_long_press_time(indev: *mut lv_indev_t, long_press_time: u16) {
+        MOCK_LONG_PRESS_MS.with(|c| c.set(long_press_time));
+        SPY.with(|s| {
+            s.borrow_mut().push(LvCall::IndevSetLongPressTime {
+                indev: indev as usize,
+                ms: long_press_time,
+            })
+        });
+    }
+
     pub unsafe fn lv_obj_move_to_index(obj: *mut lv_obj_t, index: i32) {
         SPY.with(|s| {
             s.borrow_mut().push(LvCall::ObjMoveToIndex {
@@ -3738,6 +3778,8 @@ mod tests {
         let _ = lv_anim_get_user_data as unsafe fn(*const lv_anim_t) -> *mut core::ffi::c_void;
         let _ = lv_indev_active as unsafe fn() -> *mut lv_indev_t;
         let _ = lv_indev_wait_release as unsafe fn(*mut lv_indev_t);
+        let _ = lv_indev_get_next as unsafe fn(*mut lv_indev_t) -> *mut lv_indev_t;
+        let _ = lv_indev_set_long_press_time as unsafe fn(*mut lv_indev_t, u16);
         let _ = lv_obj_move_to_index as unsafe fn(*mut lv_obj_t, i32);
     }
 
@@ -3745,7 +3787,12 @@ mod tests {
     fn indev_wrapper_symbols_are_allowlisted_for_bindgen() {
         let bindings_conf = std::fs::read_to_string("src/lvgl/bindings.conf")
             .expect("src/lvgl/bindings.conf should be readable");
-        for symbol in ["lv_indev_active", "lv_indev_wait_release"] {
+        for symbol in [
+            "lv_indev_active",
+            "lv_indev_wait_release",
+            "lv_indev_get_next",
+            "lv_indev_set_long_press_time",
+        ] {
             assert!(
                 bindings_conf.contains(symbol),
                 "{symbol} must be listed in src/lvgl/bindings.conf for Zephyr bindgen builds"

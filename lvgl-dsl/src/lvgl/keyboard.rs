@@ -872,14 +872,15 @@ unsafe extern "C" fn back_outline_draw_task_cb(e: *mut c_bindings::lv_event_t) {
 /// `ABC`, `abc`, `⌫`, `Back`, `Continue`, `🌐`, `123`.
 #[cfg(not(test))]
 unsafe extern "C" fn custom_kb_event_cb(e: *mut c_bindings::lv_event_t) {
-    // If an accent popup is active, dismiss it and suppress this key event.
+    // An open accent popup is stale the moment another key is tapped: close it,
+    // then let the tap type its character. Swallowing the tap cost the courier
+    // an extra press every time the popup had opened by accident.
     // SAFETY: called from the LVGL thread (event callback).
     let popup_active = unsafe { KB_STATE.get() }
         .as_ref()
         .map_or(false, |st| !st.accent_popup.is_null());
     if popup_active {
         dismiss_accent_popup();
-        return;
     }
 
     let obj = unsafe { c_bindings::lv_event_get_target(e) as *mut c_bindings::lv_obj_t };
