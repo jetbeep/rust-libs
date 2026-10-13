@@ -276,17 +276,48 @@ impl Stream for KeypadReceiver {
 	}
 }
 
+/// A `poll_cmd_*` call that cannot enqueue its request (allocation failure,
+/// oversized body) returns the error and never runs its completion callback.
+/// Ignoring it leaks the sender handed over as `user_data` and leaves the
+/// awaiting future pending forever: the request silently vanishes and the
+/// caller notices only at its own timeout, if it has one. Report the enqueue
+/// error through the sender instead.
+///
+/// # Safety
+/// `user_data` must come from `Box::into_raw` of the sender passed to that
+/// same call. On an enqueue error the callback was never registered (every
+/// poll_api command fails before `jb_bus_poll_request_async` queues the
+/// request), so the box is still owned here.
+///
+/// Returns whether the request was rejected.
+unsafe fn reclaim_on_enqueue_error<T>(enqueued: *const jb_error_t, user_data: *mut oneshot::Sender<Result<T, Error>>) -> bool {
+	// Errors are negative errno values; `SET_SUCCESS_CODE` may return any
+	// non-negative code. The C layer never returns NULL, and without an error
+	// to read the request has to be treated as queued.
+	if enqueued.is_null() || unsafe { (*enqueued).code } >= 0 {
+		return false;
+	}
+	let error = error::from_jb_error(enqueued);
+	log::error!("poll command not enqueued: {}", error);
+	let sender = unsafe { Box::from_raw(user_data) };
+	sender.send(Err(error)).ok();
+	true
+}
+
 /// Opens a lock asynchronously.
 pub async fn lock_open(board_id: u32, lock_id: u32) -> Result<(), Error> {
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_lock_open(
+		let enqueued = poll_cmd_lock_open(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			board_id,
 			lock_id,
 			Some(cb_simple),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -307,13 +338,16 @@ unsafe extern "C" fn cb_simple(error: *const jb_error_t, user_data: *mut core::f
 /// Gets lock statuses asynchronously.
 pub async fn lock_statuses_get(board_id: u32) -> Result<LockStatuses, Error> {
 	let (sender, receiver): (oneshot::Sender<Result<LockStatuses, Error>>, oneshot::Receiver<Result<LockStatuses, Error>>) = oneshot::channel();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_lock_statuses_get(
+		let enqueued = poll_cmd_lock_statuses_get(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			board_id,
 			Some(cb_lock_statuses),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -406,16 +440,19 @@ async fn server_request_impl(body: JkvValue, params: ServerRequestParams) -> Res
 	})?;
 
 	let (sender, receiver) = oneshot::channel::<Result<JkvValue, Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_server_request(
+		let enqueued = poll_cmd_server_request(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			params.request_type,
 			params.timeout_ms,
 			encoded_body.as_ptr(),
 			encoded_body.len(),
 			Some(cb_server_request),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	let value = receiver.await.unwrap()?;
 	into_server_response(value, params.success_codes)
@@ -531,12 +568,15 @@ unsafe extern "C" fn cb_server_request(error: *const jb_error_t, data: *const u8
 /// Starts barcode scanner asynchronously.
 pub async fn barcode_scanner_start() -> Result<(), Error> {
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_barcode_scanner_start(
+		let enqueued = poll_cmd_barcode_scanner_start(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_simple),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -544,20 +584,23 @@ pub async fn barcode_scanner_start() -> Result<(), Error> {
 /// Stops barcode scanner asynchronously.
 pub async fn barcode_scanner_stop() -> Result<(), Error> {
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_barcode_scanner_stop(
+		let enqueued = poll_cmd_barcode_scanner_stop(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get())    ,
 			Some(cb_simple),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
 
 /// Sends POLL_CMD_SLEEP to mainboard asynchronously.
 ///
-/// Turns the backlight off before requesting sleep and soft-kills the running
-/// app immediately after handing the request to the C bus layer. The shutdown
+/// Once the C bus layer has queued the request, turns the backlight off and
+/// soft-kills the running app immediately. The shutdown
 /// must NOT wait for the ack: the mainboard's sleep handler releases the
 /// screen power reference and may stop polling (or cut power) before the
 /// response is delivered, which would leave the app running with its timers
@@ -570,17 +613,25 @@ pub async fn sleep() -> Result<(), Error> {
 		fn rust_workq_request_shutdown();
 	}
 
-	unsafe { screen_backlight_set(0) };
-
 	let (sender, receiver) = oneshot::channel::<Result<(), Error>>();
-	unsafe {
-		poll_cmd_sleep(
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
+	let rejected = unsafe {
+		let enqueued = poll_cmd_sleep(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_simple),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data)
+	};
+	if rejected {
+		// The mainboard never got the request: soft-killing the app now would
+		// leave a dark, dead screen that nothing puts to sleep. Keep the app
+		// and the backlight alive and hand the error to the caller.
+		return receiver.await.unwrap_or(Ok(()));
 	}
 
+	unsafe { screen_backlight_set(0) };
 	unsafe { rust_workq_request_shutdown() };
 
 	// The queued shutdown cancels this task at its next suspension point, so
@@ -683,12 +734,15 @@ pub extern "C" fn rust_bus_keypad_emit(button_type: i32, is_keypress: bool) {
 /// Gets modem info asynchronously.
 pub async fn modem_get_info() -> Result<ModemInfo, Error> {
 	let (sender, receiver) = oneshot::channel::<Result<ModemInfo, Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_modem_get_info(
+		let enqueued = poll_cmd_modem_get_info(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_modem_info),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -736,12 +790,15 @@ unsafe extern "C" fn cb_modem_info(error: *const jb_error_t, data: *const u8, si
 /// Gets battery info asynchronously.
 pub async fn battery_get_info() -> Result<BatteryInfo, Error> {
 	let (sender, receiver) = oneshot::channel::<Result<BatteryInfo, Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_battery_get_info(
+		let enqueued = poll_cmd_battery_get_info(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_battery_info),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -789,12 +846,15 @@ unsafe extern "C" fn cb_battery_info(error: *const jb_error_t, data: *const u8, 
 /// Gets version info asynchronously.
 pub async fn version_info() -> Result<VersionInfo, Error> {
 	let (sender, receiver) = oneshot::channel::<Result<VersionInfo, Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_version_info(
+		let enqueued = poll_cmd_version_info(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_version_info),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
@@ -846,12 +906,15 @@ pub async fn get_device_settings() -> Result<DeviceSettings, Error> {
 
 pub(crate) async fn fetch_device_settings() -> Result<DeviceSettings, Error> {
 	let (sender, receiver) = oneshot::channel::<Result<DeviceSettings, Error>>();
+	let user_data = Box::into_raw(Box::new(sender));
+	// SAFETY: `user_data` is the sender boxed for this very call.
 	unsafe {
-		poll_cmd_get_device_settings(
+		let enqueued = poll_cmd_get_device_settings(
 			i2c_jb_bus_get_bus(i2c_jb_bus_get()),
 			Some(cb_device_settings),
-			Box::into_raw(Box::new(sender)) as *mut _,
+			user_data as *mut _,
 		);
+		reclaim_on_enqueue_error(enqueued, user_data);
 	}
 	receiver.await.unwrap()
 }
