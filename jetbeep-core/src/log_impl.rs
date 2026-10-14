@@ -6,6 +6,13 @@ use log::{Level, Log, Metadata, Record};
 
 pub struct Logger;
 
+/// Last segment of the module path: `main_menu_view`, not
+/// `project_app::flow_main::views::main_menu_view`. The log lives on a small
+/// flash partition, and the full path costs ~35 bytes per line.
+fn short_target(target: &str) -> &str {
+    target.rsplit("::").next().unwrap_or(target)
+}
+
 enum RawLogLevel {
     Error = 1,
     Warn = 2,
@@ -28,7 +35,7 @@ impl Log for Logger {
             Level::Trace => RawLogLevel::Debug as u32,
         };
 
-        let msg = format!("{}: {}\0", record.target(), record.args());
+        let msg = format!("{}: {}\0", short_target(record.target()), record.args());
         unsafe {
             rust_log_message(level, msg.as_ptr() as *const c_char);
         }
